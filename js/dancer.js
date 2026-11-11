@@ -1,7 +1,13 @@
-// NOVA — the original procedural idol-dancer of STARFALL.
+// The dancers of STARFALL.
 //
-// Everything here is generated from code: lofted organic body parts, a canvas-painted face,
-// a spring-simulated ponytail, a lagging halo ring and a custom cel/rim shader.
+//  - NOVA, the original procedural idol-dancer and coach: createDancer()
+//  - the players' live avatars, hologram mannequins on the same rig:
+//    createDancer({ variant: 'player', color, label })
+//
+// Everything here is generated from code. NOVA: lofted organic body parts, a canvas-painted face,
+// a spring-simulated ponytail, a lagging halo ring and a custom cel/rim shader. Player avatar: one
+// merged low-poly mannequin posed in the vertex shader, a translucent fresnel/scanline shader and
+// a canvas-painted name tag.
 //
 // Pose convention (see CONTRACT.md): every segment is a unit direction parent -> child in stage
 // space (+x screen right, +y up, +z toward the viewer); `l*` limbs are on the SCREEN-LEFT (-x).
@@ -1612,7 +1618,7 @@ function createTail(material, opts) {
 }
 
 /* ------------------------------------------------------------------------------------------ */
-/* The dancer                                                                                  */
+/* The rig: pose springs + FK + grounding, shared by NOVA and the player avatars               */
 /* ------------------------------------------------------------------------------------------ */
 
 function makeFrame() {
@@ -1665,94 +1671,20 @@ function place(mesh, fr, pos) {
 }
 
 /**
- * Create NOVA.
- * @param {object} [options]
- * @param {number} [options.smoothing=46]  pose spring frequency (rad/s); higher = snappier
- * @returns {{group: THREE.Group, setPose: Function, update: Function, setExpression: Function,
- *            flash: Function, height: number}}
+ * Pose state and forward kinematics for one figure.
+ *
+ * `M` holds one slot per rigid part — anything with a `.matrix` (NOVA passes her meshes, a player
+ * avatar passes bare matrix slots): { pelvis, waist, chest, neck, head,
+ * l: { upperArm, forearm, hand, thigh, shin, foot }, r: { … } }. solve() writes each part's
+ * matrix in the figure's group space.
+ *
+ * @param {object} M      rigid part slots
+ * @param {number} omega  pose spring frequency (rad/s); higher = snappier
+ * @param {object} [opts]
+ * @param {number} [opts.armClearance=0]  > 0: lift flat arms clear of the body by this margin (m)
  */
-export function createDancer(options = {}) {
-  const group = new THREE.Group();
-  group.name = 'NOVA';
-
-  /* ---- materials ---- */
-  const face = createFaceTexture();
-  const uniforms = {
-    uKeyDir: { value: new THREE.Vector3(-0.38, 0.62, 0.68).normalize() },
-    uKeyColor: { value: new THREE.Color(1.0, 0.96, 0.92) },
-    uAmbSky: { value: new THREE.Color(0.2, 0.19, 0.34) },
-    uAmbGround: { value: new THREE.Color(0.1, 0.07, 0.16) },
-    uRimA: { value: new THREE.Color('#19e3d2') },
-    uRimB: { value: new THREE.Color('#8a5cff') },
-    uRim: { value: 1.2 },
-    uGlow: { value: 1.0 },
-    uFlashColor: { value: new THREE.Color('#ffffff') },
-    uFlash: { value: 0 },
-    uTime: { value: 0 },
-  };
-  const bodyMat = new THREE.ShaderMaterial({
-    name: 'nova-body',
-    uniforms,
-    vertexShader: VERT,
-    fragmentShader: FRAG,
-  });
-  const headMat = new THREE.ShaderMaterial({
-    name: 'nova-head',
-    uniforms: { ...uniforms, uFace: { value: face.texture } },
-    defines: { USE_FACE: '' },
-    vertexShader: VERT,
-    fragmentShader: FRAG,
-  });
-
-  /* ---- meshes (one per rigid part) ---- */
-  const meshes = [];
-  function part(name, geo, mat = bodyMat) {
-    const m = new THREE.Mesh(geo, mat);
-    m.name = `nova-${name}`;
-    m.matrixAutoUpdate = false;
-    m.frustumCulled = false;
-    m.castShadow = true;
-    group.add(m);
-    meshes.push(m);
-    return m;
-  }
-
-  const M = {
-    pelvis: part('pelvis', buildPelvis()),
-    waist: part('waist', buildWaist()),
-    chest: part('chest', buildChest()),
-    neck: part('neck', buildNeck()),
-    head: part('head', buildHead(), headMat),
-    halo: part('halo', buildHalo()),
-    l: {
-      upperArm: part('l-upperarm', buildUpperArm(-1)),
-      forearm: part('l-forearm', buildForearm(-1)),
-      hand: part('l-hand', buildHand(1)),
-      thigh: part('l-thigh', buildThigh(-1)),
-      shin: part('l-shin', buildShin(-1)),
-      foot: part('l-foot', buildFoot()),
-    },
-    r: {
-      upperArm: part('r-upperarm', buildUpperArm(1)),
-      forearm: part('r-forearm', buildForearm(1)),
-      hand: part('r-hand', buildHand(-1)),
-      thigh: part('r-thigh', buildThigh(1)),
-      shin: part('r-shin', buildShin(1)),
-      foot: part('r-foot', buildFoot()),
-    },
-  };
-  M.halo.castShadow = false;
-
-  const tail = createTail(bodyMat, {
-    segments: 11, length: 0.82, radius: 0.057, tipStart: 0.55, damping: 1.7, gravity: 1.0,
-  });
-  const wisp = createTail(bodyMat, {
-    segments: 7, length: 0.46, radius: 0.022, tipStart: 0.55, damping: 3.2, gravity: 0.9,
-  });
-  group.add(tail.mesh, wisp.mesh);
-
+function createRig(M, omega, opts = {}) {
   /* ---- pose state (critically damped springs on every direction) ---- */
-  const omega = options.smoothing ?? 46;
   const cur = {};
   const vel = {};
   const tgt = {};
@@ -1775,7 +1707,9 @@ export function createDancer(options = {}) {
       x = +v.x || 0; y = +v.y || 0; z = +v.z || 0;
     }
     const l = Math.hypot(x, y, z);
-    if (!(l > 1e-6)) return out.copy(fallback);
+    // zero, NaN or infinite input: keep the previous target (an Infinity would otherwise turn
+    // into NaN here and poison the springs for good)
+    if (!(l > 1e-6 && l < Infinity)) return out.copy(fallback);
     return out.set(x / l, y / l, z / l);
   }
 
@@ -1784,6 +1718,7 @@ export function createDancer(options = {}) {
     for (const s of SEGMENTS) readVec(tgt[s], pose[s], tgt[s]);
     scalT.hipX = Number.isFinite(pose.hipX) ? clamp(pose.hipX, -0.6, 0.6) : 0;
     scalT.yaw = Number.isFinite(pose.yaw) ? pose.yaw : 0;
+    if (armClearance) clearArms();
     if (!hasPose) {
       hasPose = true;
       snapNext = true;
@@ -1939,25 +1874,129 @@ export function createDancer(options = {}) {
     frameYZ(hf, v1, v0, C.x);
   }
 
-  /* ---- secondary-motion state ---- */
-  const halo = {
-    pos: new THREE.Vector3(), vel: new THREE.Vector3(), quat: new THREE.Quaternion(),
-    target: new THREE.Vector3(), tq: new THREE.Quaternion(), init: false,
-    m: new THREE.Matrix4(), spin: new THREE.Quaternion(), tiltQ: new THREE.Quaternion(),
-  };
-  halo.tiltQ.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -0.22);
-  const colliders = [
-    { c: new THREE.Vector3(), r: 0.128 * DIM.headScale }, // head
-    { c: new THREE.Vector3(), r: 0.122 }, // shoulder blades L
-    { c: new THREE.Vector3(), r: 0.122 }, // shoulder blades R
-    { c: new THREE.Vector3(), r: 0.118 }, // waist
-    { c: new THREE.Vector3(), r: 0.15 }, // hips
-    { c: new THREE.Vector3(), r: 0.07 }, // neck
+  /* ---- optional: keep flat (2D-tracked) arms in front of the body ---- */
+  // A pose that comes from a webcam has z ~ 0 everywhere, so an arm folded across the chest
+  // would lie INSIDE the torso and vanish. With `armClearance` on, setPose() lifts such an arm
+  // forward just far enough to clear the body (shared between the upper arm and the forearm, the
+  // way a real elbow comes forward). Its direction in the frontal plane — what the player sees
+  // and what is judged — is left untouched; the arm only foreshortens a little. An arm that is
+  // already in front (an authored pose, or a tracker that supplies depth) is not changed, and
+  // neither is an arm the body is not in the way of, wherever it points (out to the side of a
+  // twisted torso, say): poses that are clear of the body solve exactly as they do for NOVA.
+  const armClearance = opts.armClearance > 0 ? opts.armClearance : 0;
+  // y along the spine from the hip centre -> [half-width, front depth] of torso / thighs
+  const BODY_FRONT = [
+    [-0.36, 0.15, 0.08], [-0.08, 0.16, 0.088], [0.02, 0.132, 0.096], [0.2, 0.09, 0.074],
+    [0.33, 0.138, 0.106], [0.42, 0.126, 0.09], [0.5, 0.06, 0.066],
   ];
-  const tailAnchor = new THREE.Vector3();
-  const tailDir = new THREE.Vector3();
-  const wispAnchor = new THREE.Vector3();
-  const wispDir = new THREE.Vector3();
+  const HEAD_Y = DIM.spine + DIM.headCentre;
+  const clr = makeFrame(); // chest frame of the TARGET pose
+
+  /** How far forward (chest-local z) the centre of a limb of radius r must be at (x, y). 0 = free. */
+  function bodyFront(x, y, r) {
+    let need = 0;
+    const T = BODY_FRONT;
+    const y0 = T[0][0];
+    const y1 = T[T.length - 1][0];
+    if (y > y0 - r && y < y1 + r) {
+      const yy = clamp(y, y0, y1);
+      let i = 0;
+      while (i < T.length - 2 && yy > T[i + 1][0]) i++;
+      const t = (yy - T[i][0]) / (T[i + 1][0] - T[i][0]);
+      const hw = mix(T[i][1], T[i + 1][1], t) + r;
+      const zf = mix(T[i][2], T[i + 1][2], t) + r + armClearance;
+      const v = 1 - (x * x) / (hw * hw);
+      if (v > 0) need = zf * Math.sqrt(v) * clamp((y - y0 + r) / r, 0, 1) * clamp((y1 + r - y) / r, 0, 1);
+    }
+    const hx = x / (0.1 + r);
+    const hy = (y - HEAD_Y) / (0.135 + r);
+    const hv = 1 - hx * hx - hy * hy;
+    if (hv > 0) need = Math.max(need, (0.112 + r + armClearance) * Math.sqrt(hv));
+    return need;
+  }
+
+  /**
+   * The depth (chest-local z) a point of the arm should be at: where it is (`z`) when nothing is
+   * in the way, at least `req` when the body is (`need` = bodyFront there, `req` = need + any
+   * extra lead). A point BEHIND the chest plane is brought round to the front only as the body
+   * grows thick enough there to reach it (need -> |z|), so the result is continuous in everything
+   * and equals `z` wherever need and lead are zero.
+   */
+  function frontOf(z, req, need) {
+    if (z >= 0) return Math.max(z, req);
+    return Math.max(z, req + z * (1 - smoothstep(0, 1, need / -z)));
+  }
+
+  /** Re-aim a unit vector at local forward component z, keeping its frontal-plane direction. */
+  function liftTo(out, lx, ly, z) {
+    const k = Math.sqrt(Math.max(0, 1 - z * z)) / Math.hypot(lx, ly);
+    out.set(0, 0, 0).addScaledVector(clr.x, lx * k).addScaledVector(clr.y, ly * k).addScaledVector(clr.z, z);
+    return k;
+  }
+
+  function clearArm(sg, a, b) {
+    const L1 = DIM.upperArm;
+    const L2 = DIM.forearm;
+    const R_ARM = 0.05;
+    const R_HAND = 0.042;
+    const sx = sg * DIM.shoulderHalf;
+    const sy = DIM.shoulderY;
+    let ax = a.dot(clr.x);
+    let ay = a.dot(clr.y);
+    let az = a.dot(clr.z);
+    let bx = b.dot(clr.x);
+    let by = b.dot(clr.y);
+    let bz = b.dot(clr.z);
+
+    // what the forearm and hand need where they are now; the elbow brings half of it
+    let ex = sx + L1 * ax;
+    let ey = sy + L1 * ay;
+    const reach = L2 + 0.085; // palm centre
+    const needHand = Math.max(
+      bodyFront(ex + 0.5 * L2 * bx, ey + 0.5 * L2 * by, R_ARM),
+      bodyFront(ex + L2 * bx, ey + L2 * by, R_ARM),
+      bodyFront(ex + reach * bx, ey + reach * by, R_HAND),
+    );
+    const needElbow = Math.max(bodyFront(ex, ey, R_ARM), 0.5 * needHand);
+    const azNeed = Math.min(0.62, frontOf(L1 * az, needElbow, needElbow) / L1);
+    if (azNeed > az + 1e-9 && Math.hypot(ax, ay) > 1e-3) {
+      const k = liftTo(a, ax, ay, azNeed);
+      ax *= k;
+      ay *= k;
+      az = azNeed;
+      ex = sx + L1 * ax;
+      ey = sy + L1 * ay;
+    }
+    const ez = L1 * az;
+
+    // the screen-right forearm passes in front where the two would meet at the centre line
+    if (Math.hypot(bx, by) < 1e-3) return;
+    const wx = ex + L2 * bx;
+    const lead = sg > 0
+      ? 0.05 * (1 - smoothstep(0.05, 0.17, Math.abs(wx))) * smoothstep(0, 0.05, bodyFront(wx, ey + L2 * by, R_ARM))
+      : 0;
+    for (let pass = 0; pass < 2; pass++) {
+      const nMid = bodyFront(ex + 0.5 * L2 * bx, ey + 0.5 * L2 * by, R_ARM);
+      const nWrist = bodyFront(ex + L2 * bx, ey + L2 * by, R_ARM);
+      const nPalm = bodyFront(ex + reach * bx, ey + reach * by, R_HAND);
+      const bzNeed = Math.min(0.92, Math.max(
+        (frontOf(ez + 0.5 * L2 * bz, nMid + lead * 0.5, nMid) - ez) / (0.5 * L2),
+        (frontOf(ez + L2 * bz, nWrist + lead, nWrist) - ez) / L2,
+        (frontOf(ez + reach * bz, nPalm + lead, nPalm) - ez) / reach,
+      ));
+      if (!(bzNeed > bz + 1e-9)) break;
+      const k = liftTo(b, bx, by, bzNeed);
+      bx *= k;
+      by *= k;
+      bz = bzNeed;
+    }
+  }
+
+  function clearArms() {
+    torsoFrame(clr, tgt.spine, 1.0, scalT.yaw);
+    clearArm(-1, tgt.lUpperArm, tgt.lForearm);
+    clearArm(1, tgt.rUpperArm, tgt.rForearm);
+  }
 
   const HS = DIM.headScale;
 
@@ -2020,6 +2059,136 @@ export function createDancer(options = {}) {
       place(m.foot, f.foot, j.ankle);
     }
   }
+
+  return {
+    setPose,
+    stepPose,
+    solve,
+    /** Jump straight to the target pose on the next step (no easing in from the old one). */
+    snap() {
+      snapNext = true;
+    },
+    frames: F,
+    joints: J,
+  };
+}
+
+/* ------------------------------------------------------------------------------------------ */
+/* NOVA                                                                                        */
+/* ------------------------------------------------------------------------------------------ */
+
+/**
+ * Create NOVA.
+ * @param {object} options
+ * @param {number} [options.smoothing=46]  pose spring frequency (rad/s); higher = snappier
+ * @returns {{group: THREE.Group, setPose: Function, update: Function, setExpression: Function,
+ *            flash: Function, height: number}}
+ */
+function createNova(options) {
+  const group = new THREE.Group();
+  group.name = 'NOVA';
+
+  /* ---- materials ---- */
+  const face = createFaceTexture();
+  const uniforms = {
+    uKeyDir: { value: new THREE.Vector3(-0.38, 0.62, 0.68).normalize() },
+    uKeyColor: { value: new THREE.Color(1.0, 0.96, 0.92) },
+    uAmbSky: { value: new THREE.Color(0.2, 0.19, 0.34) },
+    uAmbGround: { value: new THREE.Color(0.1, 0.07, 0.16) },
+    uRimA: { value: new THREE.Color('#19e3d2') },
+    uRimB: { value: new THREE.Color('#8a5cff') },
+    uRim: { value: 1.2 },
+    uGlow: { value: 1.0 },
+    uFlashColor: { value: new THREE.Color('#ffffff') },
+    uFlash: { value: 0 },
+    uTime: { value: 0 },
+  };
+  const bodyMat = new THREE.ShaderMaterial({
+    name: 'nova-body',
+    uniforms,
+    vertexShader: VERT,
+    fragmentShader: FRAG,
+  });
+  const headMat = new THREE.ShaderMaterial({
+    name: 'nova-head',
+    uniforms: { ...uniforms, uFace: { value: face.texture } },
+    defines: { USE_FACE: '' },
+    vertexShader: VERT,
+    fragmentShader: FRAG,
+  });
+
+  /* ---- meshes (one per rigid part) ---- */
+  const meshes = [];
+  function part(name, geo, mat = bodyMat) {
+    const m = new THREE.Mesh(geo, mat);
+    m.name = `nova-${name}`;
+    m.matrixAutoUpdate = false;
+    m.frustumCulled = false;
+    m.castShadow = true;
+    group.add(m);
+    meshes.push(m);
+    return m;
+  }
+
+  const M = {
+    pelvis: part('pelvis', buildPelvis()),
+    waist: part('waist', buildWaist()),
+    chest: part('chest', buildChest()),
+    neck: part('neck', buildNeck()),
+    head: part('head', buildHead(), headMat),
+    halo: part('halo', buildHalo()),
+    l: {
+      upperArm: part('l-upperarm', buildUpperArm(-1)),
+      forearm: part('l-forearm', buildForearm(-1)),
+      hand: part('l-hand', buildHand(1)),
+      thigh: part('l-thigh', buildThigh(-1)),
+      shin: part('l-shin', buildShin(-1)),
+      foot: part('l-foot', buildFoot()),
+    },
+    r: {
+      upperArm: part('r-upperarm', buildUpperArm(1)),
+      forearm: part('r-forearm', buildForearm(1)),
+      hand: part('r-hand', buildHand(-1)),
+      thigh: part('r-thigh', buildThigh(1)),
+      shin: part('r-shin', buildShin(1)),
+      foot: part('r-foot', buildFoot()),
+    },
+  };
+  M.halo.castShadow = false;
+
+  const tail = createTail(bodyMat, {
+    segments: 11, length: 0.82, radius: 0.057, tipStart: 0.55, damping: 1.7, gravity: 1.0,
+  });
+  const wisp = createTail(bodyMat, {
+    segments: 7, length: 0.46, radius: 0.022, tipStart: 0.55, damping: 3.2, gravity: 0.9,
+  });
+  group.add(tail.mesh, wisp.mesh);
+
+  /* ---- rig ---- */
+  const rig = createRig(M, options.smoothing ?? 46);
+  const { frames: F, joints: J, setPose, stepPose, solve } = rig;
+
+  /* ---- secondary-motion state ---- */
+  const halo = {
+    pos: new THREE.Vector3(), vel: new THREE.Vector3(), quat: new THREE.Quaternion(),
+    target: new THREE.Vector3(), tq: new THREE.Quaternion(), init: false,
+    m: new THREE.Matrix4(), spin: new THREE.Quaternion(), tiltQ: new THREE.Quaternion(),
+  };
+  halo.tiltQ.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -0.22);
+  const colliders = [
+    { c: new THREE.Vector3(), r: 0.128 * DIM.headScale }, // head
+    { c: new THREE.Vector3(), r: 0.122 }, // shoulder blades L
+    { c: new THREE.Vector3(), r: 0.122 }, // shoulder blades R
+    { c: new THREE.Vector3(), r: 0.118 }, // waist
+    { c: new THREE.Vector3(), r: 0.15 }, // hips
+    { c: new THREE.Vector3(), r: 0.07 }, // neck
+  ];
+  const tailAnchor = new THREE.Vector3();
+  const tailDir = new THREE.Vector3();
+  const wispAnchor = new THREE.Vector3();
+  const wispDir = new THREE.Vector3();
+
+  const HS = DIM.headScale;
 
   function secondary(time, dt, energy) {
     const H = F.head;
@@ -2203,7 +2372,7 @@ export function createDancer(options = {}) {
   face.redraw(expression, 1);
   faceKey = `${expression}:1`;
   update(0, 0, {});
-  snapNext = true;
+  rig.snap();
 
   return {
     group,
@@ -2219,4 +2388,976 @@ export function createDancer(options = {}) {
     /** Joint positions (group space) of the last solved frame; handy for VFX anchoring. */
     joints: J,
   };
+}
+
+/* ------------------------------------------------------------------------------------------ */
+/* Player avatar — a hologram mannequin driven live by the player's tracked pose               */
+/* ------------------------------------------------------------------------------------------ */
+//
+// Same skeleton, proportions, FK, grounding and pose springs as NOVA (createRig above), but none
+// of her look: one colour of translucent light, no face, no clothes, no hair.
+//
+// The whole body is ONE merged geometry. Every vertex carries the index of the rigid part it
+// belongs to and the vertex shader places that part with a matrix from a uniform array, so the
+// figure costs two draw calls however it is posed:
+//   1. a depth-only pre-pass  — makes the shell self-occluding (an arm in front of the chest
+//      reads as an arm, not as an x-ray) and keeps it from sort-fighting with anything else;
+//   2. the hologram pass      — premultiplied-alpha: the body lightly veils what is behind it
+//      (so it still reads in front of the star) and the fresnel rim is added on top (so it blooms).
+// Plus one quad for the name tag: 3 draw calls per avatar (4 with the optional floor emitter ring).
+
+const AVATAR_PARTS = 17;
+/** Everything that is safe to tweak live; every avatar exposes its own copy as `avatar.tuning`. */
+const AVATAR_TUNING = {
+  smoothing: 28, // pose spring (rad/s), read once at creation. NOVA uses 46; 28 trails a moving
+  //                limb by ~65 ms (NOVA: ~35 ms) and halves 22 fps tracker jitter
+  syncEase: 7, // 1/s: how fast the look follows setSync()
+  syncLo: 0.12, // setSync() value that still looks "not matching"
+  syncHi: 0.9, // setSync() value that looks fully locked in
+  pulseFrom: 0.72, // visual sync above which the body starts to pulse with the beat
+  presenceIn: 2.4, // presence units per second while materialising (0 -> 1 in ~0.4 s)
+  presenceOut: 1.5, // ... while dissolving (slower: nothing visible changes for the first ~0.25 s,
+  //                    so a few dropped tracking frames never make the avatar flicker)
+  revealEnd: 0.62, // presence at which the bottom-up materialise wipe has cleared the head
+  flashDecay: 7.5, // 1/s
+  flashInflate: 0.012, // metres the shell swells at the peak of a flash
+  surgeTime: 0.3, // seconds the hit surge takes to climb from the feet to the head
+  ringTime: 0.5, // seconds the floor ring takes to expand on a hit
+  scanSpeed: 1.4, // scanline drift, lines per second
+  sweepRate: 0.2, // slow bright sweeps up the body, per second
+  armClearance: 0.014, // metres of air kept between a flat (2D-tracked) arm and the body
+  labelHeight: 0.235, // tag height in metres (group space)
+  labelGap: 0.085, // gap between the top of the head and the tip of the tag
+  labelFollow: 13, // tag spring (rad/s): floats behind the head instead of jittering with it
+  labelPop: 0.18, // tag scale bump on a flash
+};
+
+/** Merge raw parts (each tagged with `.part`) into one geometry with an aPart attribute. */
+function mergeRigid(parts) {
+  let vCount = 0;
+  let iCount = 0;
+  for (const part of parts) {
+    if (!part.n) computeNormals(part);
+    vCount += part.p.length / 3;
+    iCount += part.i.length;
+  }
+  const pos = new Float32Array(vCount * 3);
+  const nor = new Float32Array(vCount * 3);
+  const prt = new Float32Array(vCount);
+  const idx = vCount > 65535 ? new Uint32Array(iCount) : new Uint16Array(iCount);
+  let vo = 0;
+  let io = 0;
+  for (const part of parts) {
+    const c = part.p.length / 3;
+    pos.set(part.p, vo * 3);
+    nor.set(part.n, vo * 3);
+    prt.fill(part.part, vo, vo + c);
+    for (let k = 0; k < part.i.length; k++) idx[io + k] = part.i[k] + vo;
+    vo += c;
+    io += part.i.length;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  geo.setAttribute('aPart', new THREE.BufferAttribute(prt, 1));
+  geo.setIndex(new THREE.BufferAttribute(idx, 1));
+  // parts are placed in the vertex shader, so the box/sphere of the raw data means nothing
+  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0.95, 0), 2.6);
+  return geo;
+}
+
+/**
+ * The mannequin: smooth tapered volumes in the same local frames the rig poses NOVA's parts in
+ * (limbs hang along local -y from their joint, feet point along +z), at a fraction of her
+ * triangle count. Part order = slot order in createPlayerAvatar.
+ */
+function buildMannequin() {
+  const parts = [];
+  const add = (index, raw) => {
+    raw.part = index;
+    parts.push(raw);
+  };
+
+  // 0 pelvis
+  {
+    const E = 2.2;
+    const at = makeProfile([
+      R(-0.07, 0.068, 0.06, 0.064, 0, 0, E),
+      R(-0.04, 0.108, 0.084, 0.092, 0, 0, E),
+      R(-0.005, 0.124, 0.092, 0.102, 0, 0, E),
+      R(0.035, 0.119, 0.09, 0.098, 0, 0, E),
+      R(0.1, 0.102, 0.082, 0.084, 0, 0, E),
+      R(0.16, 0.092, 0.077, 0.077, 0, 0, E),
+      R(0.2, 0.09, 0.076, 0.076, 0, 0, E),
+    ]);
+    add(0, loft([
+      ...domeRings(at(at.y0), -0.02, 2).reverse(),
+      ...sampleRings(at, at.y0, at.y1, 8),
+      ...domeRings(at(at.y1), 0.01, 2),
+    ], 14, true, true));
+  }
+
+  // 1 waist
+  add(1, capsule([
+    R(0.09, 0.09, 0.075, 0.074, 0, 0, 2.2),
+    R(0.2, 0.087, 0.073, 0.071, 0, 0, 2.2),
+    R(0.31, 0.099, 0.081, 0.076, 0, 0, 2.2),
+  ], { n: 5, seg: 14, bot: 0.012, top: 0.012, dome: 2 }));
+
+  // 2 chest: ribcage rising into soft shoulders and the base of the neck
+  {
+    const E = 2.3;
+    const at = makeProfile([
+      R(0.2, 0.095, 0.078, 0.074, 0, 0, E),
+      R(0.262, 0.115, 0.093, 0.087, 0, 0, E),
+      R(0.322, 0.132, 0.106, 0.097, 0, 0, E),
+      R(0.378, 0.137, 0.102, 0.099, 0, 0, E),
+      R(0.418, 0.125, 0.089, 0.091, 0, 0, E),
+      R(0.446, 0.092, 0.069, 0.075, 0, 0, E),
+      R(0.468, 0.05, 0.046, 0.05, 0, 0, 2),
+    ]);
+    add(2, loft([
+      ...domeRings(at(at.y0), -0.012, 2).reverse(),
+      ...sampleRings(at, at.y0, at.y1, 11),
+      ...domeRings(at(at.y1), 0.014, 2),
+    ], 18, true, true));
+  }
+
+  // 3 neck
+  add(3, capsule([
+    R(-0.04, 0.036, 0.033, 0.035),
+    R(0.03, 0.03, 0.029, 0.031),
+    R(0.1, 0.029, 0.029, 0.031),
+  ], { n: 4, seg: 10, bot: 0.01, top: 0.012, dome: 2 }));
+
+  // 4 head: the bare skull shape, nothing else
+  {
+    const RINGS = 14;
+    const rings = [];
+    for (let i = 0; i < RINGS; i++) {
+      const phi = mix(-HALF_PI * 0.94, HALF_PI * 0.94, i / (RINGS - 1));
+      rings.push(headRing(DIM.headRY * Math.sin(phi)));
+    }
+    add(4, loft(rings, 18, true, true));
+  }
+
+  const footRot = new THREE.Matrix4().makeRotationX(HALF_PI); // loft +y -> +z (toe), loft +z -> -y (down)
+  for (const [sg, base] of [[-1, 5], [1, 11]]) {
+    // upper arm
+    {
+      const L = DIM.upperArm;
+      add(base, capsule([
+        R(-L, 0.037, 0.037, 0.037),
+        R(-L * 0.55, 0.043, 0.044, 0.044),
+        R(-L * 0.18, 0.05, 0.052, 0.051),
+        R(0, 0.05, 0.052, 0.052),
+      ], { n: 6, seg: 10, bot: 0.037, top: 0.044, dome: 3 }));
+    }
+    // forearm
+    {
+      const L = DIM.forearm;
+      add(base + 1, capsule([
+        R(-L, 0.028, 0.03, 0.03),
+        R(-L * 0.55, 0.036, 0.037, 0.037),
+        R(-L * 0.2, 0.039, 0.039, 0.039),
+        R(0, 0.037, 0.037, 0.037),
+      ], { n: 6, seg: 10, bot: 0.014, top: 0.037, dome: 3 }));
+    }
+    // hand: a mitten with a thumb, palm normal along local x (see armSolve)
+    {
+      const p = -sg;
+      add(base + 2, capsule([
+        R(-0.168, 0.012, 0.024, 0.022, p * 0.011),
+        R(-0.135, 0.016, 0.038, 0.034, p * 0.009),
+        R(-0.088, 0.019, 0.045, 0.04, p * 0.004),
+        R(-0.04, 0.02, 0.04, 0.036, 0),
+        R(0.012, 0.023, 0.029, 0.029, 0),
+      ], { n: 7, seg: 8, bot: 0.014, top: 0.01, dome: 2 }));
+      const thumb = capsule([
+        R(0, 0.014, 0.015, 0.015),
+        R(0.034, 0.013, 0.0135, 0.0135),
+        R(0.064, 0.01, 0.0105, 0.0105),
+      ], { n: 3, seg: 6, bot: 0.011, top: 0.01, dome: 2 });
+      add(base + 2, xform(thumb, alignY([p * 0.32, -0.74, 0.6], [p * 0.003, -0.038, 0.03])));
+    }
+    // thigh
+    {
+      const L = DIM.thigh;
+      add(base + 3, capsule([
+        R(-L, 0.05, 0.052, 0.052),
+        R(-L * 0.7, 0.057, 0.06, 0.06),
+        R(-L * 0.3, 0.067, 0.071, 0.074, -sg * 0.006),
+        R(0, 0.07, 0.075, 0.08, -sg * 0.01),
+      ], { n: 7, seg: 12, bot: 0.05, top: 0.07, dome: 3 }));
+    }
+    // shin (calf to the back)
+    {
+      const L = DIM.shin;
+      add(base + 4, capsule([
+        R(-L, 0.036, 0.038, 0.038),
+        R(-L * 0.62, 0.05, 0.05, 0.057),
+        R(-L * 0.25, 0.051, 0.05, 0.055),
+        R(0, 0.05, 0.052, 0.052),
+      ], { n: 7, seg: 12, bot: 0.03, top: 0.05, dome: 3 }));
+    }
+    // foot: a rounded wedge whose sole sits exactly DIM.ankle below the ankle joint
+    {
+      const foot = capsule([
+        R(-0.07, 0.034, 0.033, 0.046, 0, 0.062, 2.6),
+        R(-0.02, 0.041, 0.033, 0.054, 0, 0.062, 2.6),
+        R(0.045, 0.045, 0.033, 0.044, 0, 0.062, 2.6),
+        R(0.11, 0.048, 0.033, 0.031, 0, 0.062, 2.6),
+        R(0.165, 0.042, 0.031, 0.022, 0, 0.062, 2.6),
+      ], { n: 6, seg: 12, bot: 0.016, top: 0.022, dome: 2 });
+      add(base + 5, xform(foot, footRot));
+    }
+  }
+
+  return mergeRigid(parts);
+}
+
+// P1 and P2 are the same mannequin: build it once and share it.
+let mannequinGeo = null;
+let mannequinUsers = 0;
+function acquireMannequin() {
+  if (!mannequinGeo) mannequinGeo = buildMannequin();
+  mannequinUsers++;
+  return mannequinGeo;
+}
+function releaseMannequin() {
+  mannequinUsers = Math.max(0, mannequinUsers - 1);
+  if (mannequinUsers === 0 && mannequinGeo) {
+    mannequinGeo.dispose();
+    mannequinGeo = null;
+  }
+}
+
+const AVATAR_VERT = /* glsl */ `
+#define PART_COUNT ${AVATAR_PARTS}
+invariant gl_Position; // the depth pre-pass and the hologram pass must agree to the last bit
+
+attribute float aPart;
+
+uniform mat4 uPart[PART_COUNT];
+uniform float uInflate;
+
+varying vec3 vN;
+varying vec3 vView;
+varying vec3 vGroup;
+
+void main() {
+  mat4 pm = uPart[int(aPart + 0.5)];
+  vec3 gn = normalize(mat3(pm) * normal);
+  vec3 gp = (pm * vec4(position, 1.0)).xyz + gn * uInflate;
+  vec4 mv = modelViewMatrix * vec4(gp, 1.0);
+  vGroup = gp;
+  vN = normalize(normalMatrix * gn);
+  vView = -mv.xyz;
+  gl_Position = projectionMatrix * mv;
+}
+`;
+
+const AVATAR_FRAG = /* glsl */ `
+uniform vec3 uColor;
+uniform vec3 uFlashColor;
+uniform vec3 uCore;
+uniform float uFlash;
+uniform float uSurge;
+uniform float uSurgeAmp;
+uniform float uSync;
+uniform float uPulse;
+uniform float uReveal;
+uniform float uAlpha;
+uniform float uScan;
+uniform float uSweep;
+uniform float uTime;
+uniform float uHeight;
+
+varying vec3 vN;
+varying vec3 vView;
+varying vec3 vGroup;
+
+void main() {
+  // materialise / dissolve: the figure is drawn from the floor up to uReveal
+  float h = vGroup.y / uHeight;
+  float cut = uReveal - h;
+  if (cut < 0.0) discard;
+#ifdef DEPTH_ONLY
+  gl_FragColor = vec4(0.0);
+#else
+  vec3 N = normalize(vN);
+  vec3 V = normalize(vView);
+  float e = 1.0 - clamp(abs(dot(N, V)), 0.0, 1.0);
+  float rimSoft = e * sqrt(e);
+  float rimHot = e * e * e;
+
+  // a pale, cool ghost of the player colour when out of sync; the pure colour when locked in
+  float s = uSync;
+  float luma = dot(uColor, vec3(0.2126, 0.7152, 0.0722));
+  vec3 body = mix(luma * vec3(0.84, 0.92, 1.18), uColor, mix(0.45, 1.0, s));
+  vec3 hot = mix(body, vec3(1.0), 0.2);
+
+  // soft scanlines in the avatar's own space; they fade out before they can alias
+  float sy = vGroup.y * 38.0 - uScan;
+  float fw = fwidth(sy);
+  float line = 0.5 + 0.5 * sin(sy * 6.2831853);
+  float lines = 1.0 - 0.2 * (1.0 - line) * clamp(1.5 - fw * 3.0, 0.0, 1.0);
+
+  // a slow bright sweep climbing the body
+  float dS = (h - uSweep) / 0.05;
+  float sweep = exp(-dS * dS);
+
+  // the sync core: a light in the chest that comes on as the player matches
+  vec3 dc = vGroup - uCore;
+  float core = exp(-dot(dc, dc) / 0.0075);
+
+  float fill = mix(0.17, 0.32, s) + 0.07 * uPulse;
+  vec3 em = body * ((fill + rimSoft * mix(1.6, 2.5, s)) * lines + sweep * 0.22);
+  em += hot * (rimHot * mix(1.1, 1.9, s) * (1.0 + 0.35 * uPulse));
+  em += hot * (core * (0.10 + 0.85 * s + 0.5 * uPulse));
+  em *= mix(0.80, 1.0, s) * (0.97 + 0.03 * sin(uTime * 43.0 + h * 7.0));
+
+  // hit: the whole body turns to the rating colour (kept below white-out so the colour reads,
+  // the rim carries the brightness) and a surge of light runs up it
+  float dU = (h - uSurge) / 0.085;
+  em = em * (1.0 - 0.6 * min(uFlash, 1.0)) + uFlashColor * (uFlash * (0.75 + 1.9 * rimSoft));
+  em += mix(uFlashColor, vec3(1.0), 0.35) * (exp(-dU * dU) * uSurgeAmp * 1.6);
+
+  // white-hot leading edge of the materialise wipe
+  em += hot * ((1.0 - smoothstep(0.0, 0.03, cut)) * 2.4);
+
+  // premultiplied: "cov" veils the background, the emission is added on top of it
+  float cov = clamp(mix(0.50, 0.62, s) + 0.30 * rimSoft + 0.25 * uFlash, 0.0, 0.94);
+  gl_FragColor = vec4((body * (0.04 * cov) + em) * uAlpha, cov * uAlpha);
+#endif
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}
+`;
+
+// Name tag: a quad that stands on uTagPos and turns about the world up axis to face whichever
+// camera is rendering — so it reads upright from the front and as a true mirror image in the
+// stage's planar floor reflection (whose camera sits below the floor).
+const TAG_VERT = /* glsl */ `
+uniform vec3 uTagPos;
+uniform vec2 uTagSize;
+varying vec2 vUv;
+
+void main() {
+  vUv = uv;
+  vec4 wc = modelMatrix * vec4(uTagPos, 1.0);
+  float sc = length(modelMatrix[1].xyz);
+  vec3 toCam = cameraPosition - wc.xyz;
+  toCam /= max(length(toCam), 1e-4);
+  vec3 right = cross(vec3(0.0, 1.0, 0.0), toCam);
+  float rl = length(right);
+  right = rl > 1e-4 ? right / rl : vec3(1.0, 0.0, 0.0);
+  vec3 up = cross(toCam, right);
+  vec3 wp = wc.xyz + (right * (position.x * uTagSize.x) + up * ((position.y + 0.5) * uTagSize.y)) * sc;
+  gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
+}
+`;
+
+const TAG_FRAG = /* glsl */ `
+uniform sampler2D uMap;
+uniform float uTagAlpha;
+uniform float uTagGain;
+varying vec2 vUv;
+
+void main() {
+  vec4 t = texture2D(uMap, vUv); // premultiplied
+  gl_FragColor = vec4(t.rgb * uTagGain, t.a) * uTagAlpha;
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}
+`;
+
+// Optional emitter ring on the floor under the avatar: where the hologram is "projected" from.
+// Off by default — in the game the stage paints its own player pads into the floor.
+const PAD_VERT = /* glsl */ `
+varying vec2 vP;
+
+void main() {
+  vP = position.xz;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+`;
+
+const PAD_FRAG = /* glsl */ `
+uniform vec3 uColor;
+uniform vec3 uFlashColor;
+uniform float uFlash;
+uniform float uRing;
+uniform float uRingAmp;
+uniform float uSync;
+uniform float uPulse;
+uniform float uAlpha;
+uniform float uTime;
+varying vec2 vP;
+
+void main() {
+  float r = length(vP);
+  float fr = fwidth(r) + 1e-4;
+  float ang = atan(vP.y, vP.x);
+  float s = uSync;
+
+  float ring = 1.0 - smoothstep(0.006, 0.014 + fr, abs(r - 0.33));
+  float dash = smoothstep(-0.2, 0.2, sin(ang * 14.0 + uTime * 0.8));
+  float outer = (1.0 - smoothstep(0.003, 0.008 + fr, abs(r - 0.405))) * dash;
+  float glow = exp(-r * r / 0.045);
+  float dh = (r - 0.33) / 0.07;
+  float halo = exp(-dh * dh);
+
+  vec3 col = uColor * (ring * (0.55 + 0.75 * s + 0.5 * uPulse) + outer * (0.25 + 0.3 * s)
+    + glow * (0.03 + 0.07 * s) + halo * (0.05 + 0.10 * s + 0.08 * uPulse));
+
+  // hit: a ring races outward
+  float rad = mix(0.33, 0.70, uRing);
+  float dq = (r - rad) / (0.03 + 0.05 * uRing);
+  col += uFlashColor * (exp(-dq * dq) * uRingAmp * 1.6 + ring * uFlash * 1.2);
+
+  col *= 1.0 - smoothstep(0.66, 0.74, r);
+  gl_FragColor = vec4(col * uAlpha, 1.0);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}
+`;
+
+const TAG_FONT_STACK = '"Unbounded", "Gothic A1", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif';
+
+/** Canvas-painted name tag ("P1", "P2", or any short string). */
+function createTagTexture() {
+  if (typeof document === 'undefined') {
+    // headless (Node) fallback so the module can be exercised without a DOM
+    const tex = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+    tex.needsUpdate = true;
+    return { texture: tex, aspect: 1.5, redraw() {}, dispose() { tex.dispose(); } };
+  }
+  const H = 176;
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.premultiplyAlpha = true;
+  texture.anisotropy = 4;
+  let alive = true;
+  let token = 0;
+
+  function paint(text, css) {
+    const font = (px) => `900 ${px}px ${TAG_FONT_STACK}`;
+    let px = 90;
+    ctx.font = font(px);
+    let tw = ctx.measureText(text).width;
+    const maxText = 440; // longer names shrink instead of growing a billboard
+    if (tw > maxText) {
+      px = Math.max(30, Math.floor((px * maxText) / tw));
+      ctx.font = font(px);
+      tw = ctx.measureText(text).width;
+    }
+    const W = Math.ceil(Math.max(212, tw + 104));
+    if (canvas.width !== W) {
+      canvas.width = W; // also clears; the GPU copy is re-allocated at the new size
+      texture.dispose();
+    } else ctx.clearRect(0, 0, W, H);
+
+    const m = 9; // room for the stroke and its glow
+    const x0 = m;
+    const y0 = m;
+    const w = W - 2 * m;
+    const h = 126;
+    const r = 38;
+    const cx = W / 2;
+    const tipY = H - m;
+    const outline = () => {
+      ctx.beginPath();
+      ctx.moveTo(x0 + r, y0);
+      ctx.lineTo(x0 + w - r, y0);
+      ctx.arcTo(x0 + w, y0, x0 + w, y0 + r, r);
+      ctx.lineTo(x0 + w, y0 + h - r);
+      ctx.arcTo(x0 + w, y0 + h, x0 + w - r, y0 + h, r);
+      ctx.lineTo(cx + 23, y0 + h);
+      ctx.lineTo(cx, tipY);
+      ctx.lineTo(cx - 23, y0 + h);
+      ctx.lineTo(x0 + r, y0 + h);
+      ctx.arcTo(x0, y0 + h, x0, y0 + h - r, r);
+      ctx.lineTo(x0, y0 + r);
+      ctx.arcTo(x0, y0, x0 + r, y0, r);
+      ctx.closePath();
+    };
+
+    // plate: deep indigo glass with a wash of the player colour
+    outline();
+    ctx.fillStyle = 'rgba(11, 6, 32, 0.82)';
+    ctx.fill();
+    ctx.save();
+    outline();
+    ctx.clip();
+    const wash = ctx.createLinearGradient(0, y0, 0, tipY);
+    wash.addColorStop(0, css);
+    wash.addColorStop(1, 'rgba(11, 6, 32, 0)');
+    ctx.globalAlpha = 0.34;
+    ctx.fillStyle = wash;
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+
+    // border in the player colour
+    outline();
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 7;
+    ctx.strokeStyle = css;
+    ctx.stroke();
+
+    // label
+    ctx.font = font(px);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    const tm = ctx.measureText(text);
+    const asc = tm.actualBoundingBoxAscent || px * 0.72;
+    const desc = tm.actualBoundingBoxDescent || 0;
+    const ty = y0 + h / 2 + (asc - desc) / 2;
+    ctx.save();
+    ctx.shadowColor = css;
+    ctx.shadowBlur = 16;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(text, cx, ty);
+    ctx.restore();
+
+    texture.needsUpdate = true;
+    return W / H;
+  }
+
+  const tag = {
+    texture,
+    aspect: 256 / H,
+    /** Paint now, and once more when the web fonts have arrived. `onChange` gets the new aspect. */
+    redraw(text, css, onChange) {
+      const mine = ++token;
+      tag.aspect = paint(text, css);
+      const fonts = document.fonts;
+      if (fonts && typeof fonts.load === 'function') {
+        Promise.all([
+          fonts.load('900 90px "Unbounded"', text),
+          fonts.load('900 90px "Gothic A1"', text),
+        ]).then((loaded) => {
+          if (!alive || mine !== token || !loaded.some((l) => l && l.length)) return;
+          tag.aspect = paint(text, css);
+          if (onChange) onChange(tag.aspect);
+        }).catch(() => {});
+      }
+    },
+    dispose() {
+      alive = false;
+      texture.dispose();
+    },
+  };
+  return tag;
+}
+
+const sat = (v) => (v > 0 ? (v < 1 ? v : 1) : 0); // clamp to 0..1, NaN -> 0
+const NO_LEVELS = Object.freeze({});
+
+/**
+ * Create a player avatar. Same object shape as NOVA plus setPresence / setSync.
+ * @param {object} options
+ * @param {number|string} [options.color=0x19e3d2]  the player's colour (P1 teal, P2 coral 0xff5a6e)
+ * @param {string} [options.label]                   text of the floating tag ("P1"); '' = no tag
+ * @param {number} [options.smoothing=28]            pose spring frequency (rad/s)
+ * @param {number} [options.presence=1]              initial presence (0 = start hidden)
+ * @param {boolean} [options.clearArms=true]         lift flat (z ~ 0) arms in front of the body so
+ *                                                   webcam poses never bury an arm in the torso
+ * @param {boolean} [options.base=false]             also draw a hologram emitter ring on the floor
+ *                                                   (for use without the stage's own player pads)
+ * @param {number} [options.labelScale=1]            tag size multiplier
+ */
+function createPlayerAvatar(options) {
+  const T = { ...AVATAR_TUNING };
+  if (Number.isFinite(options.smoothing)) T.smoothing = options.smoothing;
+  const labelScale = Number.isFinite(options.labelScale) ? options.labelScale : 1;
+
+  const group = new THREE.Group();
+  let labelText = options.label == null ? '' : String(options.label);
+  group.name = labelText ? `AVATAR ${labelText}` : 'AVATAR';
+
+  /* ---- colour ---- */
+  const tint = new THREE.Color(); // as given (for the tag)
+  const _c = new THREE.Color();
+  /** Bring a colour to a common brightness so teal and coral glow (and bloom) alike. */
+  function level(out, target, lo, hi) {
+    const l = 0.2126 * out.r + 0.7152 * out.g + 0.0722 * out.b;
+    return out.multiplyScalar(clamp(target / Math.max(l, 1e-3), lo, hi));
+  }
+
+  /* ---- uniforms (shared between the passes) ---- */
+  const partMats = new Float32Array(AVATAR_PARTS * 16);
+  for (let i = 0; i < AVATAR_PARTS; i++) partMats[i * 16] = partMats[i * 16 + 5] = partMats[i * 16 + 10] = partMats[i * 16 + 15] = 1;
+  const tagTex = createTagTexture();
+  const U = {
+    uPart: { value: partMats },
+    uInflate: { value: 0 },
+    uColor: { value: new THREE.Color() },
+    uFlashColor: { value: new THREE.Color(1, 1, 1) },
+    uCore: { value: new THREE.Vector3(0, 1.2, 0) },
+    uFlash: { value: 0 },
+    uSurge: { value: -1 },
+    uSurgeAmp: { value: 0 },
+    uSync: { value: 0 },
+    uPulse: { value: 0 },
+    uReveal: { value: 10 },
+    uAlpha: { value: 1 },
+    uScan: { value: 0 },
+    uSweep: { value: -1 },
+    uTime: { value: 0 },
+    uHeight: { value: HEIGHT },
+    uRing: { value: 1 },
+    uRingAmp: { value: 0 },
+    uMap: { value: tagTex.texture },
+    uTagPos: { value: new THREE.Vector3(0, HEIGHT + 0.1, 0) },
+    uTagSize: { value: new THREE.Vector2(0.3, 0.2) },
+    uTagAlpha: { value: 1 },
+    uTagGain: { value: 1 },
+  };
+  const pick = (...names) => {
+    const o = {};
+    for (const n of names) o[n] = U[n];
+    return o;
+  };
+  const shellUniforms = pick('uPart', 'uInflate', 'uColor', 'uFlashColor', 'uCore', 'uFlash', 'uSurge',
+    'uSurgeAmp', 'uSync', 'uPulse', 'uReveal', 'uAlpha', 'uScan', 'uSweep', 'uTime', 'uHeight');
+
+  /* ---- materials ---- */
+  // 1. depth only: opaque queue, so the shell is in the depth buffer before anything blends
+  const depthMat = new THREE.ShaderMaterial({
+    name: 'avatar-depth',
+    uniforms: shellUniforms,
+    defines: { DEPTH_ONLY: '' },
+    vertexShader: AVATAR_VERT,
+    fragmentShader: AVATAR_FRAG,
+    colorWrite: false,
+    depthWrite: true,
+    depthTest: true,
+  });
+  // 2. the hologram itself: nearest surface only (depth func LEQUAL against the pre-pass)
+  const shellMat = new THREE.ShaderMaterial({
+    name: 'avatar-shell',
+    uniforms: shellUniforms,
+    vertexShader: AVATAR_VERT,
+    fragmentShader: AVATAR_FRAG,
+    transparent: true,
+    premultipliedAlpha: true,
+    depthWrite: false,
+    depthTest: true,
+    extensions: { derivatives: true },
+  });
+  const tagMat = new THREE.ShaderMaterial({
+    name: 'avatar-tag',
+    uniforms: pick('uMap', 'uTagPos', 'uTagSize', 'uTagAlpha', 'uTagGain'),
+    vertexShader: TAG_VERT,
+    fragmentShader: TAG_FRAG,
+    transparent: true,
+    premultipliedAlpha: true,
+    depthWrite: false,
+    depthTest: true,
+  });
+  const padMat = options.base !== true ? null : new THREE.ShaderMaterial({
+    name: 'avatar-pad',
+    uniforms: pick('uColor', 'uFlashColor', 'uFlash', 'uRing', 'uRingAmp', 'uSync', 'uPulse', 'uAlpha', 'uTime'),
+    vertexShader: PAD_VERT,
+    fragmentShader: PAD_FRAG,
+    blending: THREE.AdditiveBlending,
+    transparent: true,
+    depthWrite: false,
+    depthTest: true,
+    polygonOffset: true, // it lies on the stage floor
+    polygonOffsetFactor: -4,
+    polygonOffsetUnits: -4,
+    extensions: { derivatives: true },
+  });
+
+  /* ---- meshes ---- */
+  const bodyGeo = acquireMannequin();
+  const meshes = [];
+  function layer(name, geo, mat, renderOrder) {
+    const m = new THREE.Mesh(geo, mat);
+    m.name = `avatar-${name}`;
+    m.matrixAutoUpdate = false; // identity: everything is placed in the shaders
+    m.frustumCulled = false;
+    m.renderOrder = renderOrder;
+    group.add(m);
+    meshes.push(m);
+    return m;
+  }
+  // The pre-pass goes LAST in the opaque queue (renderOrder 5), so every solid thing behind the
+  // avatar — NOVA included, whichever was created first — is already in the colour buffer and
+  // shows through the shell. The blended layers then draw early in the transparent queue, in a
+  // fixed order, ahead of the stage's additive ribbons, beams and particles (renderOrder >= 10):
+  // whatever is in front of the avatar is added over it, whatever is behind it is hidden by the
+  // pre-pass depth. Nothing is left to the sorter.
+  layer('depth', bodyGeo, depthMat, 5);
+  let padGeo = null;
+  if (padMat) {
+    padGeo = new THREE.PlaneGeometry(1.5, 1.5);
+    padGeo.rotateX(-HALF_PI); // faces up: culled in the floor's mirror pass, as it should be
+    padGeo.translate(0, 0.006, 0);
+    layer('pad', padGeo, padMat, 1);
+  }
+  layer('shell', bodyGeo, shellMat, 2);
+  const tagGeo = new THREE.PlaneGeometry(1, 1);
+  const tagMesh = layer('tag', tagGeo, tagMat, 3);
+
+  /* ---- rig: bare matrix slots instead of meshes, packed into uPart after every solve ---- */
+  const slot = () => ({ matrix: new THREE.Matrix4(), matrixWorldNeedsUpdate: false });
+  const limb = () => ({
+    upperArm: slot(), forearm: slot(), hand: slot(), thigh: slot(), shin: slot(), foot: slot(),
+  });
+  const M = { pelvis: slot(), waist: slot(), chest: slot(), neck: slot(), head: slot(), l: limb(), r: limb() };
+  const slots = [
+    M.pelvis, M.waist, M.chest, M.neck, M.head,
+    M.l.upperArm, M.l.forearm, M.l.hand, M.l.thigh, M.l.shin, M.l.foot,
+    M.r.upperArm, M.r.forearm, M.r.hand, M.r.thigh, M.r.shin, M.r.foot,
+  ];
+  const rig = createRig(M, T.smoothing, { armClearance: options.clearArms === false ? 0 : T.armClearance });
+  const { frames: F, joints: J, setPose, stepPose, solve } = rig;
+  const HS = DIM.headScale;
+
+  /* ---- state ---- */
+  let presenceT = sat(options.presence ?? 1);
+  let presence = presenceT;
+  let asleep = false;
+  let syncT = 0;
+  let syncS = 0;
+  let flashAmt = 0;
+  let flashPower = 0;
+  let flashAge = 99;
+  let kickEnv = 0;
+  let hasKick = false;
+  let scanPhase = 0;
+  let sweepPhase = Math.random();
+  const bobPhase = Math.random() * TAU;
+  let lastTime = 0;
+  let disposed = false;
+  let tagAspect = 1.3;
+  let tagReady = false;
+  const tagPos = U.uTagPos.value;
+  const tagVel = new THREE.Vector3();
+  const tagTarget = new THREE.Vector3();
+
+  function paintTag() {
+    tagMesh.visible = labelText !== '';
+    if (!tagMesh.visible) return;
+    tagTex.redraw(labelText, `#${tint.getHexString()}`, (aspect) => {
+      tagAspect = aspect;
+    });
+    tagAspect = tagTex.aspect;
+  }
+
+  /** Extra: change the player colour (accepts anything THREE.Color does). */
+  function setColor(color) {
+    tint.set(color ?? 0x19e3d2);
+    level(U.uColor.value.copy(tint), 0.45, 0.75, 1.5);
+    paintTag();
+  }
+
+  /** Extra: change the tag text ('' hides the tag). */
+  function setLabel(text) {
+    labelText = text == null ? '' : String(text);
+    group.name = labelText ? `AVATAR ${labelText}` : 'AVATAR';
+    paintTag();
+  }
+
+  /** How well the player matches right now (0..1): drives saturation, glow, the chest core and the pulse. */
+  function setSync(a01) {
+    syncT = sat(a01);
+  }
+
+  /**
+   * Fade in / out. 0 = gone (group hidden, nothing drawn, nothing solved); eased inside update().
+   * Values from ~0.6 up look fully materialised. `immediate` skips the easing.
+   */
+  function setPresence(a01, immediate = false) {
+    presenceT = sat(a01);
+    if (immediate) {
+      presence = presenceT;
+      if (presence <= 0) sleep();
+    }
+  }
+
+  /** Strong, short full-body pop. `strength` (0..1.5, default 1) scales it for lesser ratings. */
+  function flash(colorHex, strength = 1) {
+    // lift dark rating colours (violet) so every flash is a flash, plus a touch of white heat
+    level(_c.set(colorHex ?? 0xffffff), 0.62, 1, 3);
+    U.uFlashColor.value.copy(_c).lerp(_c.setRGB(1, 1, 1), 0.1);
+    flashPower = clamp(Number.isFinite(strength) ? strength : 1, 0, 1.5);
+    flashAmt = flashPower;
+    flashAge = 0;
+  }
+
+  function sleep() {
+    asleep = true;
+    group.visible = false;
+  }
+
+  function wake() {
+    asleep = false;
+    group.visible = true;
+    rig.snap(); // come back in the current pose, not sweeping in from a stale one
+    tagReady = false;
+    flashAmt = 0; // a hit that landed while nobody was there is not replayed
+    flashAge = 99;
+  }
+
+  function update(time = lastTime, dt = 1 / 60, opts = {}) {
+    if (!(dt > 0)) dt = 0;
+    dt = Math.min(dt, 0.1);
+    if (!Number.isFinite(time)) time = lastTime; // a bad clock must not leave NaN in the tag spring
+    lastTime = time;
+    const levels = (opts && opts.levels) || NO_LEVELS;
+    if (levels.kick != null) hasKick = true;
+    kickEnv = Math.max(clamp(+levels.kick || 0, 0, 1), kickEnv * Math.exp(-dt * 9));
+
+    // presence
+    if (presence < presenceT) presence = Math.min(presenceT, presence + dt * T.presenceIn);
+    else if (presence > presenceT) presence = Math.max(presenceT, presence - dt * T.presenceOut);
+    if (presence <= 0) {
+      if (!asleep) sleep();
+      return;
+    }
+    if (asleep) wake();
+
+    // pose -> part matrices
+    stepPose(dt);
+    solve();
+    for (let i = 0; i < AVATAR_PARTS; i++) slots[i].matrix.toArray(partMats, i * 16);
+    const C = F.chest;
+    U.uCore.value.copy(J.hip).addScaledVector(C.y, 0.33).addScaledVector(C.z, 0.035);
+
+    // name tag: stands above the head on a soft spring
+    tagTarget.copy(J.headC).addScaledVector(F.head.y, DIM.headRY * HS);
+    tagTarget.y += T.labelGap + 0.012 * Math.sin(time * 1.6 + bobPhase);
+    if (!tagReady || !(tagPos.distanceToSquared(tagTarget) <= 0.36)) {
+      tagPos.copy(tagTarget);
+      tagVel.set(0, 0, 0);
+      tagReady = true;
+    } else {
+      const w = T.labelFollow;
+      const ew = Math.exp(-w * dt);
+      _a.subVectors(tagPos, tagTarget);
+      _b.copy(tagVel).addScaledVector(_a, w).multiplyScalar(dt);
+      tagVel.addScaledVector(_b, -w).multiplyScalar(ew);
+      tagPos.copy(tagTarget).add(_a.add(_b).multiplyScalar(ew));
+    }
+
+    // sync look
+    syncS += (syncT - syncS) * (1 - Math.exp(-dt * T.syncEase));
+    const s = smoothstep(T.syncLo, T.syncHi, syncS);
+    const beat = hasKick ? kickEnv : Math.pow(0.5 + 0.5 * Math.sin(time * 12.985), 2); // 124 BPM
+    const pulse = smoothstep(T.pulseFrom, 1, s) * beat;
+    scanPhase = (scanPhase + dt * T.scanSpeed * (1 + 1.4 * s)) % 1;
+    sweepPhase = (sweepPhase + dt * T.sweepRate * (1 + s)) % 1;
+
+    // hit flash
+    flashAmt *= Math.exp(-dt * T.flashDecay);
+    if (flashAmt < 0.003) flashAmt = 0;
+    flashAge += dt;
+    const surge = flashAge / T.surgeTime;
+    const ring = clamp(flashAge / T.ringTime, 0, 1);
+
+    U.uTime.value = time;
+    U.uSync.value = s;
+    U.uPulse.value = pulse;
+    U.uScan.value = scanPhase;
+    U.uSweep.value = sweepPhase * 1.7 - 0.35;
+    U.uFlash.value = flashAmt;
+    U.uInflate.value = T.flashInflate * Math.min(flashAmt, 1);
+    U.uSurge.value = -0.1 + surge * 1.3;
+    U.uSurgeAmp.value = surge < 1.15 ? flashPower * (1 - surge / 1.15) : 0;
+    U.uRing.value = ring;
+    U.uRingAmp.value = flashPower * (1 - ring) * (1 - ring);
+
+    const rev = smoothstep(0.02, T.revealEnd, presence);
+    U.uReveal.value = rev >= 1 ? 10 : rev * 1.3;
+    U.uAlpha.value = smoothstep(0, 0.4, presence);
+    const tagH = T.labelHeight * labelScale * (1 + T.labelPop * Math.min(flashAmt, 1));
+    U.uTagSize.value.set(tagH * tagAspect, tagH);
+    U.uTagAlpha.value = smoothstep(0.45, 0.8, presence);
+    U.uTagGain.value = 1 + 0.9 * Math.min(flashAmt, 1);
+  }
+
+  function dispose() {
+    if (disposed) return;
+    disposed = true;
+    releaseMannequin();
+    tagGeo.dispose();
+    depthMat.dispose();
+    shellMat.dispose();
+    tagMat.dispose();
+    tagTex.dispose();
+    if (padMat) {
+      padGeo.dispose();
+      padMat.dispose();
+    }
+  }
+
+  // stand in idle immediately so it is never seen un-posed
+  setColor(options.color ?? 0x19e3d2);
+  update(0, 0, {});
+  rig.snap();
+  if (presence <= 0) sleep();
+
+  return {
+    group,
+    setPose,
+    update,
+    /** The mannequin has no face; kept so an avatar can go wherever NOVA's API is expected. */
+    setExpression() {},
+    flash,
+    height: HEIGHT,
+    setPresence,
+    setSync,
+    // ---- extras beyond the contract (safe to ignore) ----
+    variant: 'player',
+    setLabel,
+    setColor,
+    setRimColors() {},
+    dispose,
+    uniforms: U,
+    tuning: T,
+    /** Joint positions (group space) of the last solved frame; handy for VFX anchoring. */
+    joints: J,
+    get presence() {
+      return presence;
+    },
+    get sync() {
+      return syncS;
+    },
+  };
+}
+
+/**
+ * Create a dancer.
+ *
+ *   createDancer()                                                    -> NOVA, the coach
+ *   createDancer({ variant: 'player', color: 0x19e3d2, label: 'P1' }) -> a player's live avatar
+ *
+ * Both share one object shape: { group, setPose(pose), update(time, dt, { levels, energy }),
+ * setExpression(name), flash(colorHex), height, dispose() … }. A player avatar adds
+ * setPresence(a01) and setSync(a01) — see createPlayerAvatar.
+ *
+ * Driving an avatar, every frame:
+ *   avatar.setPresence(seen ? 1 : 0);        // eased; at 0 the group is hidden and update() does nothing
+ *   avatar.setPose(pose);                    // same pose format as NOVA; bad / missing segments keep their last direction
+ *   avatar.setSync(match01);                 // how well the player matches right now
+ *   avatar.update(time, dt, { levels });     // levels.kick times the in-sync pulse
+ * and on a rating: avatar.flash(colorHex)    // optional 2nd argument: strength 0..1.5 (default 1)
+ * Place it with group.position / group.scale; leave group.visible to setPresence.
+ *
+ * @param {object} [options]
+ * @param {'nova'|'player'} [options.variant='nova']
+ * @param {number} [options.smoothing]  pose spring frequency (rad/s); higher = snappier
+ *                                      (NOVA 46, player 28)
+ */
+export function createDancer(options = {}) {
+  const opts = options || {};
+  return opts.variant === 'player' ? createPlayerAvatar(opts) : createNova(opts);
 }

@@ -6,6 +6,12 @@
 // Everything here is procedural: no textures, models or other assets are loaded.
 // Conventions (see CONTRACT.md): +x screen right, +y up, +z toward the viewer, metres,
 // dancer at the origin facing +z.
+//
+// v2 (CONTRACT-v2.md): the stage makes room for one or two player avatars beside NOVA
+// (setPlayers / getPlayerSpots) and answers every rating with a layered, per-player hit
+// effect (pulse(kind, { player })). The rule for all hit effects: the energy goes to the
+// FLOOR, the SIDES, BEHIND the coach and the scoring avatar's own spot. Nothing is ever
+// drawn as a haze across NOVA's body.
 
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -20,7 +26,7 @@ import { SONG, sectionAtBeat } from './song.js';
 const TUNING = {
   maxPixelRatio: 2, // hard cap on devicePixelRatio
   maxPixels: 3.8e6, // drawing-buffer pixel budget (w*h*pr^2); pixel ratio is lowered to fit
-  msaaBelowPixelRatio: 1.5, // 4x MSAA on the scene target when the pixel ratio is below this
+  msaaBelowPixelRatio: 1.2, // 4x MSAA on the scene target when the pixel ratio is below this
   reflectionScale: 0.5, // planar reflection resolution relative to the drawing buffer
   exposure: 1.0,
   bloomStrength: 0.45,
@@ -35,7 +41,7 @@ const TUNING = {
   discPower: 2.4, // extra gain on the disc itself, so it stays hot while the haze stays low
   floorReflectivity: 0.6, // mirror strength of the stage disc
   beamPower: 0.2, // volumetric beam brightness
-  wavePower: 0.2, // rating shockwave brightness (a thin ring well behind the dancer)
+  wavePower: 0.8, // rating shockwave brightness (thin rings on a billboard behind everybody)
   resultsShift: 0.22, // results: the view is shifted so NOVA stands in the left third (fraction of width)
   menuShift: -0.19, // title: NOVA stands in the right third, clear of the logo and buttons
   cameraFov: 30, // vertical fov, all modes
@@ -43,8 +49,20 @@ const TUNING = {
   frameTop: 0.9,
   frameBottom: 0.66, // keeps her feet above the HUD pictogram lane
   frameSide: 0.66,
+  frameSideAvatar: 0.94, // the player avatars' reach boxes may come this close to the left/right edge
   playDollyBeat: 0.07, // metres of dolly-in on each kick
   playSway: 0.1, // metres of lateral camera sway
+  // hit feedback (v2). Everything below scales effects that live on the floor, at the sides,
+  // behind NOVA or at an avatar's spot, so none of it can veil the coach.
+  fxPower: 1.0, // master brightness of rings, pads, columns and flashes
+  fxSparks: 1.0, // particle-count multiplier for fountains and bursts
+  columnPower: 0.85, // light column at the scoring avatar's spot
+  padPower: 1.0, // the avatars' floor pads
+  edgeGlow: 0.9, // frame-edge colour hit on the scoring player's side (final pass)
+  sideBeams: 2.4, // how hard the overhead beams on the scoring side slam onto that spot
+  pylonJump: 2.6, // metres the flank pylons jump at full strength
+  punch: 0.3, // metres of camera punch-in at full strength (gold; PERFECT is 0.55 of it); capped at 0.3
+  missDip: 0.55, // desaturation of the missing player's side on MISS
 };
 
 // ---------------------------------------------------------------------------------------
@@ -58,6 +76,71 @@ const HEX = {
   amber: 0xffc24a,
   coral: 0xff5a6e,
   white: 0xfff4e2,
+};
+
+/** Player colours (index 0 = P1 on the screen-left, 1 = P2 on the screen-right). */
+export const PLAYER_COLORS = Object.freeze([0x19e3d2, 0xff5a6e]);
+
+/**
+ * One colour per rating, shared by every hit effect. They follow the HUD's rating words
+ * (cool and dim at the bottom of the ladder, white-hot and golden at the top) so the word,
+ * the floor and the light all say the same thing. MISS is a deeper red than P2's coral.
+ */
+export const RATING_COLORS = Object.freeze({
+  ok: 0x9aa3e0,
+  good: 0x9c7dff,
+  super: 0x19e3d2,
+  perfect: 0xffe9a8,
+  gold: 0xffc24a,
+  miss: 0xff3d55,
+  combo: 0xffd27a,
+});
+
+/**
+ * The hit ladder: OK < GOOD < SUPER < PERFECT < gold. Every step is bigger in several ways at
+ * once, so the rating can be read from the corner of the eye:
+ *   rings   - how many floor shockwaves leave the avatar's pad, and how far they travel (m)
+ *   wake    - how strongly the floor's LED grid lights up behind each shockwave
+ *   sparks  - fountain particle count; rise = how high it shoots (m)
+ *   column  - height (m) of the light column at the avatar's spot (0 = none)
+ *   beam    - the overhead beams on that side slam onto the spot
+ *   pylon   - the flank pylons on that side jump
+ *   halo    - a ring of light opens on the back wall behind the avatar
+ *   stage   - > 0: the WHOLE stage answers (flash, floor sweep, ring behind NOVA, ribbons, sky)
+ *   punch   - camera punch-in
+ * Exposed as `stage.ladder`; safe to tweak at runtime.
+ */
+const LADDER = {
+  ok: {
+    rings: 1, reach: 1.3, ring: 0.6, ringTime: 0.42, wake: 0.0,
+    sparks: 12, rise: 0.6, spread: 0.5, size: 0.05, life: 0.5, encore: 0, tint: 0.6,
+    column: 0, columnGain: 0, columnTime: 0,
+    pad: 0.5, padTint: 0.3, edge: 0.14, beam: 0, pylon: 0, halo: 0, haloReach: 0, stage: 0, punch: 0, ca: 0,
+  },
+  good: {
+    rings: 1, reach: 2.5, ring: 1.0, ringTime: 0.55, wake: 0.55,
+    sparks: 30, rise: 1.5, spread: 0.7, size: 0.058, life: 0.8, encore: 0, tint: 0.5,
+    column: 1.3, columnGain: 0.6, columnTime: 0.4,
+    pad: 0.85, padTint: 0.4, edge: 0.3, beam: 0, pylon: 0.35, halo: 0, haloReach: 0, stage: 0, punch: 0, ca: 0,
+  },
+  super: {
+    rings: 2, reach: 3.9, ring: 1.35, ringTime: 0.68, wake: 0.95,
+    sparks: 64, rise: 2.6, spread: 0.95, size: 0.064, life: 1.05, encore: 0, tint: 0.42,
+    column: 2.8, columnGain: 0.8, columnTime: 0.52,
+    pad: 1.1, padTint: 0.5, edge: 0.55, beam: 0.7, pylon: 0.7, halo: 0.7, haloReach: 1.5, stage: 0, punch: 0, ca: 0.25,
+  },
+  perfect: {
+    rings: 3, reach: 6.0, ring: 1.8, ringTime: 0.82, wake: 1.3,
+    sparks: 110, rise: 3.8, spread: 1.15, size: 0.07, life: 1.3, encore: 0, tint: 0.34,
+    column: 5.0, columnGain: 0.95, columnTime: 0.66,
+    pad: 1.4, padTint: 0.65, edge: 0.6, beam: 0.85, pylon: 1.0, halo: 0.85, haloReach: 2.2, stage: 0.3, punch: 0.5, ca: 0.45,
+  },
+  gold: {
+    rings: 4, reach: 7.5, ring: 2.2, ringTime: 1.0, wake: 1.6,
+    sparks: 170, rise: 4.8, spread: 1.3, size: 0.078, life: 1.6, encore: 60, tint: 0.2,
+    column: 7.0, columnGain: 1.7, columnTime: 1.0,
+    pad: 1.8, padTint: 0.8, edge: 1.0, beam: 1.3, pylon: 1.3, halo: 1.5, haloReach: 3.0, stage: 0.8, punch: 1.0, ca: 0.9,
+  },
 };
 
 function makeLook(a, b, c, star, nebula, beams, sweep, strobe, ribbons, embers) {
@@ -120,6 +203,15 @@ function setU(uniforms, name, value) {
     u.value = value;
   }
 }
+
+// Sizes shared by the hit-effect shaders and the code that feeds them.
+// Pool sizes. Worst realistic frame: both players land gold AND both reach a combo milestone
+// on the same move = 14 floor rings and 8 back-wall rings (the stage-wide parts are shared);
+// the rest is headroom for the tail of the previous move, which is still fading out.
+const RING_MAX = 16; // floor shockwaves alive at once
+const WAVE_MAX = 10; // back-wall rings alive at once
+const BURST_DRAG = 1.9; // spark air drag (1/s); used by the burst shader and launchSpeed()
+const BURST_GRAVITY = 0.55; // spark fall: y -= g * age^2
 
 // ---------------------------------------------------------------------------------------
 // GLSL
@@ -375,7 +467,8 @@ void main() {
 }
 `;
 
-// --- Floor: planar reflection + fresnel, LED lines, beat rings, edge ring ---
+// --- Floor: planar reflection + fresnel, LED lines, beat rings, edge ring, hit shockwaves
+//     (from any point on the floor, with an LED wake) and the avatars' pads ---
 const FLOOR_VERT = /* glsl */ `
 uniform mat4 uTexMatrix;
 varying vec3 vWorld;
@@ -388,6 +481,7 @@ void main() {
 }
 `;
 const FLOOR_FRAG = /* glsl */ `
+#define RING_COUNT ${RING_MAX}
 uniform sampler2D tRefl;
 uniform vec2 uReflTexel;
 uniform float uTime;
@@ -398,11 +492,15 @@ uniform float uEnergy;
 uniform float uStageR;
 uniform float uReflStrength;
 uniform float uFlash;
+uniform vec3 uFlashCol;
 uniform vec3 uColA;
 uniform vec3 uColB;
 uniform vec3 uColC;
-uniform vec4 uRings[4];
-uniform vec3 uRingCols[4];
+uniform vec4 uRings[RING_COUNT];    // birth, strength, LED wake, duration
+uniform vec4 uRingGeo[RING_COUNT];  // centre x, centre z, start radius, end radius
+uniform vec3 uRingCols[RING_COUNT];
+uniform vec4 uPads[2];              // centre x, centre z, radius, glow
+uniform vec3 uPadCols[2];
 varying vec3 vWorld;
 varying vec4 vRefl;
 ${GLSL_NOISE}
@@ -453,22 +551,47 @@ void main() {
   em += lineCol * (wave * uKick * 0.06);
   float mark = 1.0 - smoothstep(0.0, 0.02 + fr, abs(r - 0.95));
   em += uColB * mark * (0.30 + 0.40 * uKick);
+  // stage-wide flash (PERFECT / gold / combo): the whole LED grid answers in the hit colour
+  float ledLines = ringLine * 0.9 + spoke * 0.6;
+  em += uFlashCol * (ledLines * uFlash * 0.9);
   em *= stageMask;
 
   // --- stage rim ---
   float edgeBand = smoothstep(uStageR - 0.16 - fr, uStageR - 0.16 + fr, r) * stageMask;
-  em += mix(uColC, vec3(1.0), 0.25) * edgeBand * (1.2 + 1.6 * uKick + uFlash * 2.0);
+  em += mix(uColC, vec3(1.0), 0.25) * edgeBand * (1.2 + 1.6 * uKick);
+  em += uFlashCol * (edgeBand * uFlash * 3.0);
   em += uColC * exp(-max(r - uStageR, 0.0) * 1.6) * (1.0 - stageMask) * (0.18 + 0.25 * uKick);
 
-  // --- pulse rings (rating feedback) ---
-  for (int i = 0; i < 4; i++) {
+  // --- player pads: where each avatar stands, in that player's colour ---
+  for (int i = 0; i < 2; i++) {
+    float pd = length(wp.xz - uPads[i].xy);
+    float pw = fwidth(pd) + 1e-5;
+    float pr = uPads[i].z;
+    float pg = uPads[i].w;
+    float padRim = 1.0 - smoothstep(0.0, 0.022 + pw, abs(pd - pr));
+    float padInner = 1.0 - smoothstep(0.0, 0.014 + pw, abs(pd - pr * 0.62));
+    padInner += (1.0 - smoothstep(0.0, 0.014 + pw, abs(pd - pr * 0.40))) * float(i); // P2's pad carries a second inner ring
+    float padFill = 1.0 - smoothstep(0.0, pr + 1e-4, pd);
+    em += uPadCols[i] * (padRim * (0.55 + 1.7 * pg) + padInner * (0.16 + 0.5 * pg) + padFill * padFill * (0.05 + 0.8 * pg));
+  }
+
+  // --- hit shockwaves: rings that race out from under a dancer (or collapse inward on a
+  //     MISS); the LED lines they have just crossed stay lit in their wake ---
+  for (int i = 0; i < RING_COUNT; i++) {
     float age = uTime - uRings[i].x;
-    if (age > 0.0 && age < 3.0) {
-      float rad = age * uRings[i].z + 0.6;
-      float wdt = 0.10 + age * 0.22;
-      float q = (r - rad) / wdt;
-      float ring = exp(-q * q) * uRings[i].y * exp(-age * 1.7);
-      em += uRingCols[i] * ring * mix(0.35, 1.0, stageMask);
+    float dur = uRings[i].w;
+    if (age > 0.0 && age < dur) {
+      float t = age / dur;
+      float e = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
+      float rad = mix(uRingGeo[i].z, uRingGeo[i].w, e);
+      float d = length(wp.xz - uRingGeo[i].xy);
+      float wdt = 0.06 + 0.20 * t;
+      float q = (d - rad) / wdt;
+      float fade = (1.0 - t) * (1.0 - t);
+      float ring = exp(-q * q);
+      float wake = (1.0 - smoothstep(rad - 0.03, rad + 0.03, d)) * exp(-max(rad - d, 0.0) * 0.9);
+      float amt = ring * uRings[i].y + wake * (ledLines * 2.2 + 0.05) * uRings[i].z;
+      em += uRingCols[i] * (amt * fade * mix(0.3, 1.0, stageMask));
     }
   }
 
@@ -530,10 +653,12 @@ attribute float aSeed;
 varying float vY;
 varying float vH;
 varying float vSeed;
+varying float vSide;
 void main() {
   vY = position.y;
   vH = length(instanceMatrix[1].xyz);
   vSeed = aSeed;
+  vSide = step(0.0, instanceMatrix[3].x); // 0 = the screen-left flank, 1 = the screen-right flank
   gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(position, 1.0);
 }
 `;
@@ -541,9 +666,12 @@ const PYLON_FRAG = /* glsl */ `
 uniform vec3 uColA;
 uniform vec3 uColB;
 uniform float uPower;
+uniform vec4 uHitL; // rgb = hit colour of the left flank, a = amount
+uniform vec4 uHitR;
 varying float vY;
 varying float vH;
 varying float vSeed;
+varying float vSide;
 void main() {
   float hgt = vY * vH;
   float seg = fract(hgt * 5.0);
@@ -552,6 +680,9 @@ void main() {
   float cap = smoothstep(1.0 - 0.07 / max(vH, 0.05), 1.0, vY);
   vec3 col = c * (0.22 + 0.85 * vY) * gap * uPower;
   col += mix(c, vec3(1.0), 0.6) * cap * (0.9 + 0.6 * uPower);
+  // rating hit on this flank: the stack flares in the hit colour
+  vec4 hit = mix(uHitL, uHitR, vSide);
+  col += hit.rgb * (hit.a * ((0.35 + 1.5 * vY) * gap + cap * 1.2));
   gl_FragColor = vec4(col + vec3(0.004, 0.003, 0.010), 1.0);
 }
 `;
@@ -692,9 +823,9 @@ void main() {
     vCol = vec3(0.0);
     return;
   }
-  float drag = 1.9;
+  float drag = ${BURST_DRAG.toFixed(2)};
   vec3 p = position + aVel * ((1.0 - exp(-age * drag)) / drag);
-  p.y -= 0.55 * age * age;
+  p.y -= ${BURST_GRAVITY.toFixed(2)} * age * age;
   p.y = abs(p.y) + 0.02;
   vec4 mv = viewMatrix * modelMatrix * vec4(p, 1.0);
   gl_Position = projectionMatrix * mv;
@@ -721,7 +852,8 @@ void main() {
 }
 `;
 
-// --- Shockwave rings (billboard behind the dancer) ---
+// --- Shockwave rings (one big billboard behind NOVA and the avatars; every ring has its
+//     own centre, so a ring can open behind whoever scored) ---
 const WAVE_VERT = /* glsl */ `
 varying vec2 vUv;
 void main() {
@@ -730,31 +862,88 @@ void main() {
 }
 `;
 const WAVE_FRAG = /* glsl */ `
+#define WAVE_COUNT ${WAVE_MAX}
 uniform float uTime;
-uniform vec4 uWaves[3];     // birth, strength, max radius (0..1 of the quad), duration
-uniform vec3 uWaveCols[3];
+uniform vec2 uHalf;                  // half size of the quad (m)
+uniform vec4 uWaves[WAVE_COUNT];     // birth, strength, end radius (m), duration
+uniform vec4 uWaveGeo[WAVE_COUNT];   // centre x, centre y (m, quad space), start radius (m), thickness
+uniform vec3 uWaveCols[WAVE_COUNT];
 varying vec2 vUv;
 void main() {
-  vec2 p = (vUv - 0.5) * 2.0;
-  float r = length(p);
-  float theta = atan(p.y, p.x);
+  vec2 p = (vUv - 0.5) * 2.0 * uHalf;
   vec3 col = vec3(0.0);
-  for (int i = 0; i < 3; i++) {
+  for (int i = 0; i < WAVE_COUNT; i++) {
     float age = uTime - uWaves[i].x;
     float t = age / max(uWaves[i].w, 1e-3);
     if (t > 0.0 && t < 1.0) {
+      vec2 dp = p - uWaveGeo[i].xy;
+      float r = length(dp);
+      float theta = atan(dp.y, dp.x + 1e-4);
       float e = 1.0 - pow(1.0 - t, 3.0);
-      float rad = mix(0.07, uWaves[i].z, e);
-      float wdt = mix(0.035, 0.010, e);
+      float rad = mix(uWaveGeo[i].z, uWaves[i].z, e);
+      float wdt = mix(0.20, 0.06, e) * uWaveGeo[i].w;
       float q = (r - rad) / wdt;
       float ring = exp(-q * q);
-      float inner = smoothstep(rad - 0.10, rad, r) * (1.0 - step(rad, r)) * 0.04; // hollow: a ring, not a dome
-      float spark = 0.80 + 0.20 * sin(theta * 28.0 + age * 9.0 + float(i) * 2.0);
+      float inner = smoothstep(rad - 0.6, rad, r) * (1.0 - step(rad, r)) * 0.05; // hollow: a ring, not a dome
+      float spark = 0.78 + 0.22 * sin(theta * 28.0 + age * 9.0 + float(i) * 2.0);
       col += uWaveCols[i] * ((ring * spark + inner) * uWaves[i].y * pow(1.0 - t, 1.5));
     }
   }
-  col *= 1.0 - smoothstep(0.86, 1.0, r);
+  vec2 ed = abs(vUv - 0.5) * 2.0;
+  col *= (1.0 - smoothstep(0.86, 1.0, ed.x)) * (1.0 - smoothstep(0.86, 1.0, ed.y));
   gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+// --- Light columns at the avatars' spots (instanced open cylinders): a tube of light with
+//     bright edges and a faint body, so whoever stands inside it stays readable ---
+const COLUMN_VERT = /* glsl */ `
+attribute vec4 aColA;   // base colour (the player's), intensity
+attribute vec4 aColB;   // top colour (the rating's), seed
+varying vec3 vN;
+varying vec3 vV;
+varying vec2 vXZ;
+varying float vT;
+varying float vH;
+varying vec4 vColA;
+varying vec4 vColB;
+void main() {
+  vec4 wp = modelMatrix * instanceMatrix * vec4(position, 1.0);
+  vN = mat3(modelMatrix) * (mat3(instanceMatrix) * vec3(normal.x, 0.0, normal.z));
+  vV = cameraPosition - wp.xyz;
+  vXZ = position.xz;
+  vT = position.y;
+  vH = length(instanceMatrix[1].xyz);
+  vColA = aColA;
+  vColB = aColB;
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}
+`;
+const COLUMN_FRAG = /* glsl */ `
+uniform float uTime;
+uniform float uPower;
+varying vec3 vN;
+varying vec3 vV;
+varying vec2 vXZ;
+varying float vT;
+varying float vH;
+varying vec4 vColA;
+varying vec4 vColB;
+${GLSL_NOISE}
+void main() {
+  float facing = abs(dot(normalize(vN + vec3(0.0, 1e-5, 0.0)), normalize(vV)));
+  float rim = pow(1.0 - facing, 1.6);
+  float body = 0.14 * facing;
+  float y = vT * vH;                                   // metres above the floor
+  vec2 c = normalize(vXZ + vec2(1e-5, 0.0));           // seamless angle around the tube
+  float n = vnoise3(vec3(c * 2.4 + vColB.a * 17.0, y * 1.5 - uTime * 7.0));
+  float streak = 0.45 + 0.95 * n * n;                  // light racing upward
+  float foot = exp(-y * 1.3);                          // hot where it meets the pad
+  float tip = 1.0 - smoothstep(0.5, 1.0, vT);          // soft top
+  float ground = smoothstep(0.0, 0.03, vT);
+  vec3 col = mix(vColA.rgb, vColB.rgb, smoothstep(0.0, 0.7, vT)) + vec3(foot * 0.3);
+  float a = (rim * streak + body) * tip * ground * (0.55 + 0.9 * foot);
+  gl_FragColor = vec4(col * (a * vColA.a * uPower), 1.0);
 }
 `;
 
@@ -773,8 +962,9 @@ const FINAL_SHADER = {
     uRayDensity: { value: TUNING.rayDensity },
     uSun: { value: new THREE.Vector2(0.5, 1.3) },
     uRayColor: { value: new THREE.Color(1.0, 0.82, 0.6) },
-    uHit: { value: 0 },
-    uHitColor: { value: new THREE.Color(0, 0, 0) },
+    uHitL: { value: new THREE.Color(0, 0, 0) }, // rating glow on the left / right frame edge (colour x amount)
+    uHitR: { value: new THREE.Color(0, 0, 0) },
+    uMiss: { value: new THREE.Vector2(0, 0) }, // MISS dip of the left / right half
     uSaturation: { value: 1.06 },
     uContrast: { value: 1.04 },
     uFade: { value: 1 },
@@ -799,8 +989,9 @@ uniform float uRayStrength;
 uniform float uRayDensity;
 uniform vec2 uSun;
 uniform vec3 uRayColor;
-uniform float uHit;
-uniform vec3 uHitColor;
+uniform vec3 uHitL;
+uniform vec3 uHitR;
+uniform vec2 uMiss;
 uniform float uSaturation;
 uniform float uContrast;
 uniform float uFade;
@@ -852,14 +1043,24 @@ void main() {
 
   col = max(col, vec3(0.0)) * uExposure;
 
-  // rating colour hit: a glow that lives on the frame edges only
+  // rating colour hit: a glow that lives on the frame edges only (corners plus a bar hugging
+  // the left / right edge), on the side of whoever scored. The centre, where NOVA is, gets none.
+  float sideR = smoothstep(0.38, 0.62, uv.x);
   float edge = smoothstep(0.10, 0.55, r2);
-  col += uHitColor * (uHit * edge * 0.55);
+  float bar = pow(clamp(abs(c.x) * 2.0, 0.0, 1.0), 4.0);
+  col += mix(uHitL, uHitR, sideR) * (edge * 0.55 + bar * 0.45);
+
+  // MISS: that player's side of the picture dips and drains for a moment. With two players
+  // the middle band, where NOVA stands, only joins in when both miss.
+  float missL = 1.0 - smoothstep(0.30, 0.44, uv.x);
+  float missR = smoothstep(0.56, 0.70, uv.x);
+  float miss = uMiss.x * missL + uMiss.y * missR + min(uMiss.x, uMiss.y) * (1.0 - missL - missR);
+  col *= 1.0 - miss * 0.22;
 
   col = filmic(col);
 
   float luma = dot(col, vec3(0.2126, 0.7152, 0.0722));
-  col = mix(vec3(luma), col, uSaturation);
+  col = mix(vec3(luma), col, uSaturation * (1.0 - miss));
   col = (col - 0.5) * uContrast + 0.5;
   col = clamp(col, 0.0, 1.0);
 
@@ -890,7 +1091,7 @@ const BEAM_COUNT = BEAM_TOP + BEAM_FAN;
 const PYLON_COUNT = 26;
 const DUST_COUNT = 720;
 const EMBER_COUNT = 440;
-const BURST_MAX = 800;
+const BURST_MAX = 1600; // two players landing gold on the same beat: ~2 x 320 sparks, plus a combo
 const RIBBON_COUNT = 3;
 const RIBBON_SEGMENTS = 110;
 
@@ -901,15 +1102,200 @@ const BOX_Y1 = 2.28;
 const BOX_Z = 0.55;
 const PLAY_CAM_HEIGHT = 1.16;
 const PLAY_TARGET_Y = 1.1;
-const PLAY_DOLLY_MAX_IN = 0.24;
+const PLAY_BEAT_DOLLY_MAX = 0.08; // the kick dolly never exceeds this (m)
+const PLAY_PUNCH_MAX = 0.3; // nor the hit punch-in this (m)
+const PLAY_DOLLY_MAX_IN = PLAY_BEAT_DOLLY_MAX + PLAY_PUNCH_MAX + 0.02; // what the framing assumes
 const PLAY_BOB = 0.025;
+const PLAY_SHAKE = 0.02; // lateral / vertical camera shake at a full punch (m)
+
+// Where the player avatars stand: beside NOVA and a step behind her, a bit smaller. The left
+// spot is P1 (the person on the screen-left of the mirrored camera image), the right one P2.
+const SPOT_X = 2.0;
+const SPOT_Z = -0.7;
+const SPOT_SCALE = 0.9;
+const PAD_RADIUS = 0.62; // floor pad under an avatar (x spot scale)
+const COLUMN_RADIUS = 0.6; // light column around an avatar (x spot scale)
+const WAVE_Z = -2.2; // the shockwave billboard stands this far behind NOVA
+const WAVE_Y = 3.0;
+const WAVE_HALF_W = 10;
+const WAVE_HALF_H = 6;
 
 const ZERO_LEVELS = Object.freeze({ bass: 0, mid: 0, high: 0, kick: 0 });
 const EMPTY_STATE = Object.freeze({});
 
 // ---------------------------------------------------------------------------------------
+// Player spots and play-camera framing. Pure math with no three.js objects, so these exact
+// functions can be run and measured in Node (projected extents per aspect ratio).
+// ---------------------------------------------------------------------------------------
+const clampPlayers = (n) => (n >= 2 ? 2 : n >= 1 ? 1 : 0);
+
+/**
+ * Where main.js puts the avatar groups. 1P: one spot on the screen-left of NOVA; 2P: left
+ * (P1) and right (P2). Returns fresh objects: `{ x, z, scale, player }` (y is the floor, 0).
+ */
+export function getPlayerSpots(n) {
+  const count = clampPlayers(n);
+  const spots = [];
+  for (let i = 0; i < count; i++) {
+    spots.push({ x: i === 0 ? -SPOT_X : SPOT_X, z: SPOT_Z, scale: SPOT_SCALE, player: i });
+  }
+  return spots;
+}
+
+/** Default framing parameters of the play shot (the stage overrides them from its tuning). */
+export const PLAY_FRAME = Object.freeze({
+  fov: TUNING.cameraFov,
+  top: TUNING.frameTop,
+  bottom: TUNING.frameBottom,
+  side: TUNING.frameSide,
+  sideAvatar: TUNING.frameSideAvatar,
+  sway: TUNING.playSway + 0.02 + PLAY_SHAKE, // worst-case lateral camera offset
+  bob: PLAY_BOB + PLAY_SHAKE, // worst-case vertical camera offset
+  dollyIn: PLAY_DOLLY_MAX_IN, // worst-case dolly toward the stage
+  camHeight: PLAY_CAM_HEIGHT,
+  targetY: PLAY_TARGET_Y,
+});
+
+const _proj = { x: 0, y: 0, depth: 0 };
+
+/** Perspective projection of a world point for a camera at (cx, cy, cz) looking at (0, targetY, 0). */
+function projectPlayPoint(px, py, pz, cx, cy, cz, targetY, tanHalf, aspect, out) {
+  let fx = -cx;
+  let fy = targetY - cy;
+  let fz = -cz;
+  const fl = Math.hypot(fx, fy, fz) || 1;
+  fx /= fl;
+  fy /= fl;
+  fz /= fl;
+  // right = forward x up(0,1,0); up' = right x forward
+  let rx = -fz;
+  let rz = fx;
+  const rl = Math.hypot(rx, rz) || 1;
+  rx /= rl;
+  rz /= rl;
+  const ux = -rz * fy;
+  const uy = rz * fx - rx * fz;
+  const uz = rx * fy;
+  const dx = px - cx;
+  const dy = py - cy;
+  const dz = pz - cz;
+  const depth = dx * fx + dy * fy + dz * fz;
+  out.depth = depth;
+  out.x = (dx * rx + dz * rz) / (depth * tanHalf * aspect);
+  out.y = (dx * ux + dy * uy + dz * uz) / (depth * tanHalf);
+  return out;
+}
+
+/**
+ * Walks every corner of every reach box (NOVA at the origin plus `nPlayers` avatars at their
+ * spots, arms overhead / spread) through every worst-case camera placement (nearest dolly,
+ * both sway extremes, both bob extremes). `visit(boxIndex, ndcX, ndcY, depth)` may return
+ * false to stop early. Box 0 is NOVA, box 1 the left avatar, box 2 the right one.
+ */
+function walkPlayBoxes(dist, aspect, nPlayers, frame, visit) {
+  const tanHalf = Math.tan((frame.fov * Math.PI) / 360);
+  const count = clampPlayers(nPlayers);
+  for (let sx = -1; sx <= 1; sx++) {
+    for (let sy = -1; sy <= 1; sy += 2) {
+      const cx = sx * frame.sway;
+      const cy = frame.camHeight + sy * frame.bob;
+      const cz = dist - frame.dollyIn;
+      for (let b = 0; b <= count; b++) {
+        const scale = b === 0 ? 1 : SPOT_SCALE;
+        const bx = b === 0 ? 0 : b === 1 ? -SPOT_X : SPOT_X;
+        const bz = b === 0 ? 0 : SPOT_Z;
+        for (let ix = -1; ix <= 1; ix += 2) {
+          for (let iy = 0; iy <= 1; iy++) {
+            for (let iz = -1; iz <= 1; iz += 2) {
+              const px = bx + ix * BOX_X * scale;
+              const py = (iy ? BOX_Y1 : BOX_Y0) * scale;
+              const pz = bz + iz * BOX_Z * scale;
+              projectPlayPoint(px, py, pz, cx, cy, cz, frame.targetY, tanHalf, aspect, _proj);
+              if (visit(b, _proj.x, _proj.y, _proj.depth) === false) return false;
+            }
+          }
+        }
+      }
+    }
+  }
+  return true;
+}
+
+function playBoxesFit(dist, aspect, nPlayers, frame) {
+  return walkPlayBoxes(dist, aspect, nPlayers, frame, (box, x, y, depth) => {
+    if (!(depth >= 0.5)) return false; // behind / too close to the lens counts as not fitting
+    if (Math.abs(x) > (box === 0 ? frame.side : frame.sideAvatar)) return false;
+    if (y > frame.top) return false;
+    if (y < -frame.bottom) return false;
+    return true;
+  });
+}
+
+/**
+ * Smallest camera distance (m, from the origin) at which NOVA's whole reach box and the reach
+ * boxes of `nPlayers` avatars are inside the safe frame. NOVA stays on the optical axis.
+ */
+export function computePlayDistance(aspect, nPlayers = 0, frame = PLAY_FRAME) {
+  let lo = 2.0;
+  let hi = 60;
+  if (!playBoxesFit(hi, aspect, nPlayers, frame)) return hi;
+  for (let i = 0; i < 26; i++) {
+    const mid = (lo + hi) * 0.5;
+    if (playBoxesFit(mid, aspect, nPlayers, frame)) hi = mid;
+    else lo = mid;
+  }
+  return hi + 0.02;
+}
+
+/**
+ * Worst-case NDC extents of every reach box at a given camera distance (diagnostics / tests):
+ * `[{ minX, maxX, minY, maxY }]`, index 0 = NOVA, then the avatars left to right.
+ */
+export function measurePlayFrame(dist, aspect, nPlayers = 0, frame = PLAY_FRAME) {
+  const boxes = [];
+  for (let b = 0; b <= clampPlayers(nPlayers); b++) {
+    boxes.push({ minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity });
+  }
+  walkPlayBoxes(dist, aspect, nPlayers, frame, (box, x, y) => {
+    const e = boxes[box];
+    if (x < e.minX) e.minX = x;
+    if (x > e.maxX) e.maxX = x;
+    if (y < e.minY) e.minY = y;
+    if (y > e.maxY) e.maxY = y;
+    return true;
+  });
+  return boxes;
+}
+
+/** Launch speed (m/s) that makes a burst spark peak `height` metres above where it is born. */
+function launchSpeed(height) {
+  const h = Math.max(height, 0.05);
+  let v = h * BURST_DRAG + 1;
+  for (let pass = 0; pass < 4; pass++) {
+    let peak = 0;
+    for (let t = 0.05; t <= 3.0; t += 0.05) {
+      const y = (v * (1 - Math.exp(-t * BURST_DRAG))) / BURST_DRAG - BURST_GRAVITY * t * t;
+      if (y > peak) peak = y;
+    }
+    v *= h / Math.max(peak, 1e-3);
+  }
+  return v;
+}
+
+// ---------------------------------------------------------------------------------------
 // createStage
 // ---------------------------------------------------------------------------------------
+/**
+ * createStage(canvas) ->
+ *   { renderer, scene, camera,
+ *     add(object3d),                        // dancer / avatar groups
+ *     update(time, dt, { beat, levels, energy, section }), render(), resize(w, h),
+ *     setMode('menu' | 'play' | 'results'),
+ *     setPlayers(n),                        // 0 | 1 | 2 avatars share the stage: re-frames the play shot
+ *     getPlayerSpots(n?),                   // -> [{ x, z, scale, player }] where the avatar groups go
+ *     pulse(kind, { player, combo }?),      // 'ok' | 'good' | 'super' | 'perfect' | 'gold' | 'miss' | 'combo'
+ *     tuning, ladder, ratingColors, playerColors, mode, playerCount, playDistance, soloDistance, dispose() }
+ */
 export function createStage(canvas) {
   const tuning = { ...TUNING };
 
@@ -950,7 +1336,9 @@ export function createStage(canvas) {
   let viewH = 1;
   let pixelRatio = 1;
   let lastDpr = 0;
-  let playDist = 6.4;
+  let playDist = 6.4; // play shot: NOVA plus the current number of avatars
+  let soloDist = 6.4; // NOVA alone (menu and results shots are built on this)
+  let playerCount = 0;
   let viewShift = TUNING.menuShift;
   let viewShifted = false;
 
@@ -962,14 +1350,32 @@ export function createStage(canvas) {
   let highSm = 0;
   let beamPhase = 0;
 
-  // feedback envelopes (decay in update)
-  let hitAmt = 0;
-  const hitColor = new THREE.Color(0, 0, 0);
-  let lightFlash = 0;
+  // feedback envelopes (decay in update). Index 0 = the screen-left flank (P1), 1 = the right (P2).
+  const edgeAmt = [0, 0]; // frame-edge glow
+  const edgeCol = [new THREE.Color(0, 0, 0), new THREE.Color(0, 0, 0)];
+  const missAmt = [0, 0]; // MISS dip
+  const beamAmt = [0, 0]; // overhead beams slamming onto that spot
+  const pylonAmt = [0, 0]; // flank pylons jumping
+  const sideCol = [new THREE.Color(HEX.teal), new THREE.Color(HEX.coral)]; // colour of the last hit on that flank
+  const padAmt = [0, 0]; // pad glow
+  const padOn = [0, 0]; // pad presence (eased)
+  const padFlash = [new THREE.Color(HEX.teal), new THREE.Color(HEX.coral)];
+  const sideW = [1, 1]; // scratch: how much of a pulse each half of the frame gets
+  let lightFlash = 0; // whole-rig flash (lights on NOVA, beams, pylons, floor rim + LED grid)
+  const flashCol = new THREE.Color(HEX.white);
+  let fanFlash = 0; // floor fan beams at the back rim
+  let ribbonFlash = 0;
+  let skyFlash = 0;
   let camPunch = 0;
+  let punchSm = 0;
   let starFlare = 0;
-  let missAmt = 0;
   let caKick = 0;
+  let pylonWaveAt = -1000; // combo: a ripple runs outward along both pylon rows
+  let pylonWaveGain = 0;
+  let wideAt = -1000; // when the last stage-wide answer fired (two players share one)
+  let wideLevel = 0;
+  let comboAt = -1000; // when the last combo celebration fired (two players share its stage-wide part)
+  let comboLevel = 0;
 
   // scratch objects (never allocate in update/render)
   const _v1 = new THREE.Vector3();
@@ -981,6 +1387,8 @@ export function createStage(canvas) {
   const _m = new THREE.Matrix4();
   const _c1 = new THREE.Color();
   const _c2 = new THREE.Color();
+  const _c3 = new THREE.Color();
+  const _h4 = new THREE.Vector4();
   const Y_AXIS = new THREE.Vector3(0, 1, 0);
 
   const COL = {
@@ -990,6 +1398,12 @@ export function createStage(canvas) {
     coral: new THREE.Color(HEX.coral),
     white: new THREE.Color(HEX.white),
   };
+  const PLAYER_COL = [new THREE.Color(PLAYER_COLORS[0]), new THREE.Color(PLAYER_COLORS[1])];
+  const RATING_COL = {};
+  for (const key of Object.keys(RATING_COLORS)) RATING_COL[key] = new THREE.Color(RATING_COLORS[key]);
+  const ladder = {};
+  for (const key of Object.keys(LADDER)) ladder[key] = { ...LADDER[key] };
+  const SPOT_XS = [-SPOT_X, SPOT_X];
   const STAR_CORE = new THREE.Color().setRGB(1.0, 0.62, 0.2);
   const STAR_EDGE = new THREE.Color().setRGB(0.95, 0.22, 0.14);
 
@@ -1104,13 +1518,17 @@ export function createStage(canvas) {
   const reflCam = new THREE.PerspectiveCamera();
   reflCam.matrixAutoUpdate = true;
   const texMatrix = new THREE.Matrix4();
-  const ringUniforms = [];
+  const ringUniforms = []; // birth, strength, LED wake, duration
+  const ringGeo = []; // centre x, centre z, start radius, end radius
   const ringColors = [];
-  for (let i = 0; i < 4; i++) {
-    ringUniforms.push(new THREE.Vector4(-1000, 0, 7, 0));
+  for (let i = 0; i < RING_MAX; i++) {
+    ringUniforms.push(new THREE.Vector4(-1000, 0, 0, 0));
+    ringGeo.push(new THREE.Vector4(0, 0, 0, 1));
     ringColors.push(new THREE.Color(0, 0, 0));
   }
   let ringCursor = 0;
+  const padUniforms = [new THREE.Vector4(-SPOT_X, SPOT_Z, 0, 0), new THREE.Vector4(SPOT_X, SPOT_Z, 0, 0)];
+  const padColors = [new THREE.Color(0, 0, 0), new THREE.Color(0, 0, 0)];
 
   const floorMat = new THREE.ShaderMaterial({
     uniforms: {
@@ -1125,11 +1543,15 @@ export function createStage(canvas) {
       uStageR: { value: STAGE_RADIUS },
       uReflStrength: { value: tuning.floorReflectivity },
       uFlash: { value: 0 },
+      uFlashCol: { value: new THREE.Color(HEX.white) },
       uColA: { value: new THREE.Color(HEX.violet) },
       uColB: { value: new THREE.Color(HEX.teal) },
       uColC: { value: new THREE.Color(HEX.amber) },
       uRings: { value: ringUniforms },
+      uRingGeo: { value: ringGeo },
       uRingCols: { value: ringColors },
+      uPads: { value: padUniforms },
+      uPadCols: { value: padColors },
     },
     vertexShader: FLOOR_VERT,
     fragmentShader: FLOOR_FRAG,
@@ -1290,6 +1712,8 @@ export function createStage(canvas) {
       uColA: { value: new THREE.Color(HEX.violet) },
       uColB: { value: new THREE.Color(HEX.teal) },
       uPower: { value: 1 },
+      uHitL: { value: new THREE.Vector4(0, 0, 0, 0) },
+      uHitR: { value: new THREE.Vector4(0, 0, 0, 0) },
     },
     vertexShader: PYLON_VERT,
     fragmentShader: PYLON_FRAG,
@@ -1475,56 +1899,152 @@ export function createStage(canvas) {
   burst.name = 'burst';
   world.add(burst);
   let burstCursor = 0;
+  let burstDirty = false;
 
-  /**
-   * Spawn `count` sparks on a halo around the dancer, flying outward (and slightly back) so
-   * the burst frames her instead of covering her.
-   */
-  function emitBurst(count, colA, colB, speed, life, size, lift) {
-    for (let n = 0; n < count; n++) {
-      const i = burstCursor;
-      burstCursor = (burstCursor + 1) % BURST_MAX;
-      const ang = Math.random() * TAU;
-      const rr = 0.42 + Math.random() * 0.34;
-      const cx = Math.cos(ang);
-      const sy = Math.sin(ang);
-      const v = speed * (0.3 + Math.random() * 0.7);
-      const a = i * 3;
-      burstPos[a] = cx * rr * 0.85;
-      burstPos[a + 1] = 1.05 + sy * rr * 1.15;
-      burstPos[a + 2] = -0.5 - Math.random() * 0.4; // born behind her, never on top of her body
-      burstVel[a] = cx * v;
-      burstVel[a + 1] = sy * v * 0.85 + lift;
-      burstVel[a + 2] = (Math.random() - 0.7) * v * 0.6;
-      const m = i * 4;
-      burstMeta[m] = clock + Math.random() * 0.06;
-      burstMeta[m + 1] = life * (0.55 + Math.random() * 0.45);
-      burstMeta[m + 2] = size * (0.5 + Math.random());
-      burstMeta[m + 3] = Math.random();
-      const t = Math.random();
-      const hot = 1.2 + Math.random() * 1.4;
-      burstCol[a] = lerp(colA.r, colB.r, t) * hot;
-      burstCol[a + 1] = lerp(colA.g, colB.g, t) * hot;
-      burstCol[a + 2] = lerp(colA.b, colB.b, t) * hot;
-    }
+  /** Writes one spark into the pool (the oldest slot is recycled). Colours are 0..1 blends of colA -> colB. */
+  function spawnSpark(px, py, pz, vx, vy, vz, delay, life, size, colA, colB, mix, hot) {
+    const i = burstCursor;
+    burstCursor = (burstCursor + 1) % BURST_MAX;
+    const a = i * 3;
+    burstPos[a] = px;
+    burstPos[a + 1] = py;
+    burstPos[a + 2] = pz;
+    burstVel[a] = vx;
+    burstVel[a + 1] = vy;
+    burstVel[a + 2] = vz;
+    const m = i * 4;
+    burstMeta[m] = clock + delay;
+    burstMeta[m + 1] = life;
+    burstMeta[m + 2] = size;
+    burstMeta[m + 3] = Math.random();
+    burstCol[a] = lerp(colA.r, colB.r, mix) * hot;
+    burstCol[a + 1] = lerp(colA.g, colB.g, mix) * hot;
+    burstCol[a + 2] = lerp(colA.b, colB.b, mix) * hot;
+    burstDirty = true;
+  }
+
+  /** Uploads the spark pool once after any number of spawns. */
+  function commitSparks() {
+    if (!burstDirty) return;
+    burstDirty = false;
     burstPosAttr.needsUpdate = true;
     burstVelAttr.needsUpdate = true;
     burstMetaAttr.needsUpdate = true;
     burstColAttr.needsUpdate = true;
   }
 
-  function emitRing(color, strength, speed, delay) {
-    const v = ringUniforms[ringCursor];
-    v.set(clock + delay, strength, speed, 0);
+  /**
+   * Spawn `count` sparks on a halo around NOVA, flying outward (and slightly back) so the
+   * burst frames her instead of covering her.
+   */
+  function emitBurst(count, colA, colB, speed, life, size, lift) {
+    for (let n = 0; n < count; n++) {
+      const ang = Math.random() * TAU;
+      const rr = 0.42 + Math.random() * 0.34;
+      const cx = Math.cos(ang);
+      const sy = Math.sin(ang);
+      const v = speed * (0.3 + Math.random() * 0.7);
+      spawnSpark(
+        cx * rr * 0.85,
+        1.05 + sy * rr * 1.15,
+        -0.5 - Math.random() * 0.4, // born behind her, never on top of her body
+        cx * v,
+        sy * v * 0.85 + lift,
+        -Math.random() * v * 0.45, // only ever away from the lens: the halo stays behind her
+        Math.random() * 0.06,
+        life * (0.55 + Math.random() * 0.45),
+        size * (0.5 + Math.random()),
+        colA,
+        colB,
+        Math.random(),
+        1.2 + Math.random() * 1.4
+      );
+    }
+    commitSparks();
+  }
+
+  /**
+   * A fountain of sparks shooting up from the floor around (x, z): born on a ring of
+   * `radius`, peaking about `rise` metres up. Each spark is mostly colA or mostly colB
+   * (`biasB` = share of colB) so two-tone fountains stay saturated; a few are white-hot.
+   * Whatever would drift toward the centre line or the lens is held back, so a fountain
+   * beside NOVA never crosses her.
+   */
+  function emitFountain(x, z, radius, count, rise, spread, size, life, colA, colB, biasB, delay) {
+    const v0 = launchSpeed(rise * 1.2); // sparks are fading by the time they peak: aim a little higher
+    const toCentre = x > 0 ? -1 : x < 0 ? 1 : 0;
+    for (let n = 0; n < count; n++) {
+      const ang = Math.random() * TAU;
+      const cx = Math.cos(ang);
+      const cz = Math.sin(ang);
+      const rr = radius * (0.5 + 0.55 * Math.random());
+      const up = v0 * (0.42 + 0.58 * Math.pow(Math.random(), 0.6));
+      const out = spread * (0.25 + 0.75 * Math.random());
+      let vx = cx * out;
+      let vz = cz * out * 0.8;
+      if (vx * toCentre > 0) vx *= 0.25;
+      if (vz > 0) vz *= 0.4;
+      const hero = Math.random() < 0.12;
+      const white = Math.random() < 0.1;
+      const pick = Math.random() < biasB ? 1 - Math.random() * 0.2 : Math.random() * 0.2;
+      spawnSpark(
+        x + cx * rr,
+        0.04 + Math.random() * 0.14,
+        z + cz * rr * 0.8,
+        vx,
+        up,
+        vz,
+        delay + Math.random() * 0.07,
+        life * (0.6 + 0.4 * Math.random()),
+        size * (hero ? 1.9 : 0.6 + 0.8 * Math.random()),
+        white ? COL.white : colA,
+        white ? COL.white : colB,
+        pick,
+        (hero ? 2.4 : 1.3) + Math.random() * 1.3
+      );
+    }
+  }
+
+  /** Slow glitter falling behind and beside NOVA (never over her): the stage-wide reward. */
+  function emitRain(count, colA, colB) {
+    for (let n = 0; n < count; n++) {
+      const side = Math.random() < 0.5 ? -1 : 1;
+      spawnSpark(
+        side * (1.7 + Math.random() * 4.6),
+        3.3 + Math.random() * 2.6,
+        -3.6 + Math.random() * 2.8,
+        (Math.random() - 0.5) * 0.5,
+        -0.5 - Math.random() * 0.9,
+        (Math.random() - 0.6) * 0.3,
+        Math.random() * 0.45,
+        1.5 + Math.random() * 0.9,
+        0.05 + Math.random() * 0.05,
+        colA,
+        colB,
+        Math.random(),
+        1.4 + Math.random() * 1.6
+      );
+    }
+  }
+
+  /**
+   * A shockwave on the floor: a ring that travels from radius r0 to r1 around (x, z) in
+   * `duration` seconds (r1 < r0 collapses inward). `wake` > 0 leaves the LED grid lit behind it.
+   */
+  function emitRing(x, z, r0, r1, color, strength, wake, duration, delay) {
+    ringUniforms[ringCursor].set(clock + delay, strength * tuning.fxPower, wake * tuning.fxPower, duration);
+    ringGeo[ringCursor].set(x, z, r0, r1);
     ringColors[ringCursor].copy(color);
-    ringCursor = (ringCursor + 1) % ringUniforms.length;
+    ringCursor = (ringCursor + 1) % RING_MAX;
   }
 
   // ---------- shockwave billboard ----------
-  const waveUniforms = [];
+  const waveUniforms = []; // birth, strength, end radius, duration
+  const waveGeo = []; // centre x, centre y, start radius, thickness
   const waveColors = [];
-  for (let i = 0; i < 3; i++) {
-    waveUniforms.push(new THREE.Vector4(-1000, 0, 0.8, 1));
+  for (let i = 0; i < WAVE_MAX; i++) {
+    waveUniforms.push(new THREE.Vector4(-1000, 0, 1, 1));
+    waveGeo.push(new THREE.Vector4(0, 0, 0, 1));
     waveColors.push(new THREE.Color(0, 0, 0));
   }
   let waveCursor = 0;
@@ -1532,7 +2052,9 @@ export function createStage(canvas) {
   const waveMat = new THREE.ShaderMaterial({
     uniforms: {
       uTime: { value: 0 },
+      uHalf: { value: new THREE.Vector2(WAVE_HALF_W, WAVE_HALF_H) },
       uWaves: { value: waveUniforms },
+      uWaveGeo: { value: waveGeo },
       uWaveCols: { value: waveColors },
     },
     vertexShader: WAVE_VERT,
@@ -1543,21 +2065,87 @@ export function createStage(canvas) {
     depthTest: true,
     side: THREE.DoubleSide,
   });
-  const wave = new THREE.Mesh(new THREE.PlaneGeometry(11, 11), waveMat);
-  wave.position.set(0, 1.05, -2.0);
+  const wave = new THREE.Mesh(new THREE.PlaneGeometry(WAVE_HALF_W * 2, WAVE_HALF_H * 2), waveMat);
+  wave.position.set(0, WAVE_Y, WAVE_Z);
   wave.frustumCulled = false;
   wave.renderOrder = 15;
   wave.visible = false;
   wave.name = 'shockwave';
   world.add(wave);
 
-  function emitWave(color, strength, maxRadius, duration, delay) {
-    const v = waveUniforms[waveCursor];
-    v.set(clock + delay, strength * tuning.wavePower, maxRadius, duration);
+  /**
+   * A ring of light on the back wall, opening from radius r0 to r1 (m) behind the world
+   * point (x, y, z) as seen from the lens. The billboard is behind NOVA and the avatars and
+   * depth-tested, so the ring always passes behind them.
+   */
+  function emitWave(x, y, z, r0, r1, color, strength, thickness, duration, delay) {
+    // slide the centre along the eye ray onto the billboard plane
+    const ez = camPos.z;
+    const k = (ez - WAVE_Z) / Math.max(ez - z, 0.5);
+    const wx = camPos.x + (x - camPos.x) * k;
+    const wy = camPos.y + (y - camPos.y) * k;
+    waveUniforms[waveCursor].set(clock + delay, strength * tuning.wavePower * tuning.fxPower, r1 * k, duration);
+    waveGeo[waveCursor].set(wx, wy - WAVE_Y, r0 * k, thickness);
     waveColors[waveCursor].copy(color);
-    waveCursor = (waveCursor + 1) % waveUniforms.length;
+    waveCursor = (waveCursor + 1) % WAVE_MAX;
     waveAliveUntil = Math.max(waveAliveUntil, clock + delay + duration);
     wave.visible = true;
+  }
+
+  // ---------- light columns at the avatars' spots ----------
+  const columnGeo = new THREE.CylinderGeometry(1.16, 1, 1, 28, 1, true);
+  columnGeo.translate(0, 0.5, 0); // foot at y = 0, top at y = 1 (scaled to the column height)
+  const columnColA = new Float32Array(2 * 4);
+  const columnColB = new Float32Array(2 * 4);
+  columnColB[3] = 0.21;
+  columnColB[7] = 0.67;
+  const columnAttrA = new THREE.InstancedBufferAttribute(columnColA, 4);
+  const columnAttrB = new THREE.InstancedBufferAttribute(columnColB, 4);
+  columnAttrA.setUsage(THREE.DynamicDrawUsage);
+  columnAttrB.setUsage(THREE.DynamicDrawUsage);
+  columnGeo.setAttribute('aColA', columnAttrA);
+  columnGeo.setAttribute('aColB', columnAttrB);
+  const columnMat = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 }, uPower: { value: tuning.columnPower } },
+    vertexShader: COLUMN_VERT,
+    fragmentShader: COLUMN_FRAG,
+    blending: THREE.AdditiveBlending,
+    transparent: true,
+    depthWrite: false,
+    depthTest: true,
+    side: THREE.DoubleSide,
+  });
+  const columns = new THREE.InstancedMesh(columnGeo, columnMat, 2);
+  columns.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  columns.frustumCulled = false;
+  columns.renderOrder = 18;
+  columns.visible = false;
+  columns.name = 'hit-columns';
+  world.add(columns);
+  const columnBirth = [-1000, -1000];
+  const columnTime = [1, 1];
+  const columnHeight = [0, 0];
+  const columnGain = [0, 0];
+  const columnBase = [new THREE.Color(HEX.teal), new THREE.Color(HEX.coral)];
+  const columnTop = [new THREE.Color(HEX.white), new THREE.Color(HEX.white)];
+  _m.makeScale(0, 0, 0);
+  columns.setMatrixAt(0, _m);
+  columns.setMatrixAt(1, _m);
+
+  /** Shoots a light column up at spot `s`. A weaker column never cuts off a stronger one still burning. */
+  function fireColumn(s, height, gain, duration, baseCol, topCol) {
+    const age = clock - columnBirth[s];
+    if (age >= 0 && age < columnTime[s]) {
+      const left = columnGain[s] * Math.pow(1 - age / columnTime[s], 1.7);
+      if (left > gain) return;
+    }
+    columnBirth[s] = clock;
+    columnTime[s] = Math.max(duration, 0.05);
+    columnHeight[s] = height;
+    columnGain[s] = gain;
+    columnBase[s].copy(baseCol);
+    columnTop[s].copy(topCol);
+    columns.visible = true;
   }
 
   // ---------- post-processing ----------
@@ -1582,54 +2170,31 @@ export function createStage(canvas) {
   const finalU = finalPass.uniforms || (finalPass.material && finalPass.material.uniforms) || null;
 
   // ---------- camera director ----------
-  const fitCam = new THREE.PerspectiveCamera(tuning.cameraFov, 16 / 9, 0.1, 100);
-  const fitTarget = new THREE.Vector3(0, PLAY_TARGET_Y, 0);
   const camPos = new THREE.Vector3(0, 1.5, 7.5);
   const camTgt = new THREE.Vector3(0, 1.1, 0);
   const desPos = new THREE.Vector3();
   const desTgt = new THREE.Vector3();
 
-  function boxFits(dist, aspect) {
-    fitCam.fov = tuning.cameraFov;
-    fitCam.aspect = aspect;
-    fitCam.updateProjectionMatrix();
-    const sway = Math.abs(tuning.playSway) + 0.02;
-    // worst-case camera placements: nearest dolly, both sway extremes, both bob extremes
-    for (let sx = -1; sx <= 1; sx++) {
-      for (let sy = -1; sy <= 1; sy += 2) {
-        fitCam.position.set(sx * sway, PLAY_CAM_HEIGHT + sy * PLAY_BOB, dist - PLAY_DOLLY_MAX_IN);
-        fitCam.up.set(0, 1, 0);
-        fitCam.lookAt(fitTarget);
-        fitCam.updateMatrixWorld(true);
-        for (let cx = -1; cx <= 1; cx += 2) {
-          for (let cy = 0; cy <= 1; cy++) {
-            for (let cz = -1; cz <= 1; cz += 2) {
-              _v3.set(cx * BOX_X, cy ? BOX_Y1 : BOX_Y0, cz * BOX_Z);
-              // behind / too close to the lens counts as not fitting
-              if (fitCam.position.z - _v3.z < 0.5) return false;
-              _v3.project(fitCam);
-              if (Math.abs(_v3.x) > tuning.frameSide) return false;
-              if (_v3.y > tuning.frameTop) return false;
-              if (_v3.y < -tuning.frameBottom) return false;
-            }
-          }
-        }
-      }
-    }
-    return true;
+  // Framing parameters of the play shot, refreshed from the live tuning before every fit.
+  const playFrame = { ...PLAY_FRAME };
+  function refreshPlayFrame() {
+    playFrame.fov = tuning.cameraFov;
+    playFrame.top = tuning.frameTop;
+    playFrame.bottom = tuning.frameBottom;
+    playFrame.side = tuning.frameSide;
+    playFrame.sideAvatar = tuning.frameSideAvatar;
+    playFrame.sway = Math.abs(tuning.playSway) + 0.02 + PLAY_SHAKE;
+    return playFrame;
   }
 
-  /** Smallest camera distance at which the dancer's whole reach box is inside the safe frame. */
-  function computePlayDistance(aspect) {
-    let lo = 2.0;
-    let hi = 60;
-    if (!boxFits(hi, aspect)) return hi;
-    for (let i = 0; i < 26; i++) {
-      const mid = (lo + hi) * 0.5;
-      if (boxFits(mid, aspect)) hi = mid;
-      else lo = mid;
-    }
-    return hi + 0.02;
+  /**
+   * Re-fits the play shot: NOVA's whole reach box plus the reach boxes of the current number
+   * of avatars stay inside the safe frame on any aspect ratio. NOVA stays on the optical axis.
+   */
+  function refitCamera() {
+    const frame = refreshPlayFrame();
+    soloDist = computePlayDistance(camera.aspect, 0, frame);
+    playDist = playerCount > 0 ? computePlayDistance(camera.aspect, playerCount, frame) : soloDist;
   }
 
   // ---------- resize ----------
@@ -1674,7 +2239,7 @@ export function createStage(canvas) {
     camera.fov = tuning.cameraFov;
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
-    playDist = computePlayDistance(camera.aspect);
+    refitCamera();
 
     const pointScale = bufH / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) * 0.5));
     setU(dustMat.uniforms, 'uScale', pointScale);
@@ -1695,68 +2260,237 @@ export function createStage(canvas) {
     mode = m;
     modeBlend = 0;
     if (m === 'results') {
-      emitRing(COL.amber, 1.0, 6.0, 0);
+      emitRing(0, 0, 0.7, STAGE_RADIUS * 1.1, COL.amber, 1.4, 1.0, 1.1, 0);
       emitBurst(120, COL.amber, COL.white, 3.4, 1.8, 0.07, 1.4);
       starFlare = Math.max(starFlare, 0.35);
     }
   }
 
+  // ---------- players ----------
+  /**
+   * How many player avatars share the stage with NOVA (0 | 1 | 2). Re-frames the play shot
+   * so NOVA and that many avatars (see getPlayerSpots) are fully in frame, lights the
+   * avatars' floor pads during play, and decides whether per-player hits are split left /
+   * right (2 players) or answered by the whole frame (0 or 1).
+   */
+  function setPlayers(n) {
+    const count = clampPlayers(finite(Number(n), 0));
+    if (count === playerCount) return;
+    playerCount = count;
+    refitCamera();
+  }
+
   // ---------- pulse ----------
-  function pulse(kind) {
-    switch (kind) {
-      case 'perfect':
-        emitBurst(56, COL.teal, COL.white, 3.6, 1.0, 0.055, 0.9);
-        emitRing(COL.teal, 1.15, 8.0, 0);
-        emitWave(COL.teal, 0.5, 0.45, 0.6, 0);
-        hitColor.copy(COL.teal);
-        hitAmt = Math.max(hitAmt, 0.75);
-        lightFlash = Math.max(lightFlash, 0.6);
-        camPunch = Math.max(camPunch, 0.4);
-        caKick = Math.max(caKick, 0.5);
-        break;
-      case 'super':
-        emitBurst(60, COL.violet, COL.teal, 3.0, 1.0, 0.055, 0.7);
-        emitRing(COL.violet, 0.95, 7.0, 0);
-        hitColor.copy(COL.violet);
-        hitAmt = Math.max(hitAmt, 0.6);
-        lightFlash = Math.max(lightFlash, 0.4);
-        camPunch = Math.max(camPunch, 0.2);
-        break;
-      case 'good':
-        emitBurst(34, COL.teal, COL.violet, 2.3, 0.85, 0.045, 0.5);
-        emitRing(COL.teal, 0.55, 6.0, 0);
-        hitColor.copy(COL.teal);
-        hitAmt = Math.max(hitAmt, 0.32);
-        lightFlash = Math.max(lightFlash, 0.2);
-        break;
-      case 'ok':
-        emitBurst(14, COL.violet, COL.violet, 1.6, 0.7, 0.036, 0.3);
-        emitRing(COL.violet, 0.28, 5.0, 0);
-        hitColor.copy(COL.violet);
-        hitAmt = Math.max(hitAmt, 0.16);
-        break;
-      case 'miss':
-        hitColor.copy(COL.coral);
-        hitAmt = Math.max(hitAmt, 0.5);
-        missAmt = 1;
-        caKick = Math.max(caKick, 0.8);
-        break;
-      case 'gold':
-        emitBurst(160, COL.amber, COL.white, 4.8, 1.7, 0.06, 1.3);
-        emitRing(COL.amber, 1.5, 9.0, 0);
-        emitRing(COL.white, 0.9, 6.5, 0.12);
-        emitWave(COL.amber, 1.2, 0.8, 0.9, 0);
-        emitWave(COL.white, 0.5, 0.5, 0.7, 0.1);
-        hitColor.copy(COL.amber);
-        hitAmt = 1;
-        lightFlash = 0.8;
-        camPunch = 1;
-        starFlare = Math.max(starFlare, 0.15);
-        caKick = 1;
-        break;
-      default:
-        break;
+  /** Splits a pulse over the two halves of the frame: sideW[0] = left, sideW[1] = right. */
+  function weighSides(player, whole) {
+    if (player < 0 || whole) {
+      sideW[0] = 1;
+      sideW[1] = 1;
+    } else if (playerCount >= 2) {
+      sideW[0] = player === 0 ? 1 : 0;
+      sideW[1] = player === 1 ? 1 : 0;
+    } else {
+      // a single player owns the whole frame, a touch stronger on their own side
+      sideW[0] = player === 0 ? 1 : 0.6;
+      sideW[1] = player === 1 ? 1 : 0.6;
     }
+  }
+
+  /** Lights the frame edge on the weighted sides; the stronger event owns the colour. */
+  function glowEdges(color, amount) {
+    for (let s = 0; s < 2; s++) {
+      const a = amount * sideW[s];
+      if (a <= 0) continue;
+      if (a >= edgeAmt[s] * 0.7) edgeCol[s].copy(color);
+      edgeAmt[s] = Math.max(edgeAmt[s], a);
+    }
+  }
+
+  /**
+   * The whole stage answers (PERFECT, gold, combo): rig flash in the hit colour, floor grid
+   * and rim, fan beams, ribbons and sky, a floor sweep from the centre and a ring of light
+   * on the back wall behind NOVA. Two players landing the same beat share one answer.
+   */
+  function fireStage(level, color, sparkle) {
+    lightFlash = Math.max(lightFlash, 0.8 * level);
+    flashCol.copy(color);
+    fanFlash = Math.max(fanFlash, level);
+    ribbonFlash = Math.max(ribbonFlash, 0.9 * level);
+    skyFlash = Math.max(skyFlash, 0.6 * level);
+    if (clock - wideAt < 0.09 && level <= wideLevel) return;
+    wideAt = clock;
+    wideLevel = level;
+    emitRing(0, 0, 0.7, STAGE_RADIUS * (0.75 + 0.4 * level), color, 1.1 * level, 1.3 * level, 0.95, 0.03);
+    emitWave(0, 1.15, 0, 0.5, 2.6 + 2.2 * level, color, 1.6 * level, 1.0, 0.75 + 0.2 * level, 0);
+    if (sparkle) {
+      emitRing(0, 0, 0.7, STAGE_RADIUS * 0.85, COL.white, 0.8 * level, 0.5, 0.8, 0.14);
+      emitWave(0, 1.15, 0, 0.4, 3.2, COL.white, 0.9 * level, 0.7, 0.7, 0.11);
+      emitBurst(Math.round(90 * level * tuning.fxSparks), color, COL.white, 4.6, 1.6, 0.065, 1.3);
+      emitRain(Math.round(70 * level * tuning.fxSparks), color, COL.white);
+    } else {
+      emitBurst(Math.round(40 * level * tuning.fxSparks), color, COL.white, 3.6, 1.0, 0.055, 0.9);
+    }
+  }
+
+  /** One rung of the ladder (OK .. gold) at player `player`'s spot, or at both flanks when player < 0. */
+  function fireHit(kind, player) {
+    const fx = ladder[kind];
+    const rating = RATING_COL[kind];
+    const first = player < 0 ? 0 : player;
+    const last = player < 0 ? 1 : player;
+    const share = player < 0 ? 0.75 : 1; // a whole-stage call splits its energy over both flanks
+    for (let s = first; s <= last; s++) {
+      const x = SPOT_XS[s];
+      const own = PLAYER_COL[s];
+      // 1. floor shockwaves racing out from under the avatar, first in the rating colour
+      for (let k = 0; k < fx.rings; k++) {
+        const col = k === 0 ? rating : k === 1 ? own : k === 2 ? COL.white : rating;
+        emitRing(
+          x,
+          SPOT_Z,
+          0.3 * SPOT_SCALE,
+          fx.reach * (1 - 0.2 * k),
+          col,
+          fx.ring * share * (1 - 0.16 * k),
+          k === 0 ? fx.wake : fx.wake * 0.4,
+          fx.ringTime * (1 + 0.12 * k),
+          k * 0.075
+        );
+      }
+      // 2. fountain of sparks around the avatar, as tall as the rating
+      const count = Math.round(fx.sparks * share * tuning.fxSparks);
+      emitFountain(x, SPOT_Z, PAD_RADIUS * SPOT_SCALE, count, fx.rise, fx.spread, fx.size, fx.life, rating, own, fx.tint, 0);
+      if (fx.encore > 0) {
+        const again = Math.round(fx.encore * share * tuning.fxSparks);
+        emitFountain(x, SPOT_Z, PAD_RADIUS * SPOT_SCALE, again, fx.rise * 0.7, fx.spread * 1.6, fx.size, fx.life * 0.9, COL.white, rating, 0.5, 0.17);
+      }
+      // 3. light column: the player's colour at the foot, the rating's colour above
+      if (fx.column > 0) fireColumn(s, fx.column, fx.columnGain * share, fx.columnTime, own, rating);
+      // 4. the pad flares
+      if (fx.pad * share >= padAmt[s]) padFlash[s].copy(own).lerp(rating, fx.padTint);
+      padAmt[s] = Math.max(padAmt[s], fx.pad * share);
+      // 5. that flank of the rig: beams slam onto the spot, pylons jump
+      if (fx.beam * share >= beamAmt[s] * 0.7 && fx.pylon * share >= pylonAmt[s] * 0.7) {
+        sideCol[s].copy(rating).lerp(own, fx.tint * 0.4);
+      }
+      beamAmt[s] = Math.max(beamAmt[s], fx.beam * share);
+      pylonAmt[s] = Math.max(pylonAmt[s], fx.pylon * share);
+      // 6. a ring of light opens on the back wall behind the avatar
+      if (fx.halo > 0) {
+        const cy = 1.0 * SPOT_SCALE;
+        emitWave(x, cy, SPOT_Z, 0.3, fx.haloReach, rating, fx.halo * share, 1.0, 0.5 + 0.12 * fx.halo, 0);
+        if (fx.halo >= 1) emitWave(x, cy, SPOT_Z, 0.2, fx.haloReach * 0.62, own, fx.halo * share * 0.8, 0.8, 0.5, 0.09);
+      }
+    }
+    // frame edge on the scoring side
+    weighSides(player, false);
+    _c3.copy(rating);
+    if (player >= 0) _c3.lerp(PLAYER_COL[player], fx.tint * 0.3);
+    glowEdges(_c3, fx.edge);
+    caKick = Math.max(caKick, fx.ca);
+    // PERFECT and gold: the whole stage answers, the far flank joins in and the camera punches in
+    if (fx.stage > 0) {
+      for (let s = 0; s < 2; s++) {
+        if (s >= first && s <= last) continue;
+        if (pylonAmt[s] < 0.2) sideCol[s].copy(rating);
+        pylonAmt[s] = Math.max(pylonAmt[s], fx.pylon * 0.6);
+      }
+      fireStage(fx.stage, rating, kind === 'gold');
+      if (kind === 'gold') starFlare = Math.max(starFlare, 0.15);
+    }
+    camPunch = Math.max(camPunch, fx.punch);
+  }
+
+  /** MISS: nothing goes up. The pad's ring collapses inward, that side dims and drains, coral on the edge. */
+  function fireMiss(player) {
+    const first = player < 0 ? 0 : player;
+    const last = player < 0 ? 1 : player;
+    for (let s = first; s <= last; s++) {
+      emitRing(SPOT_XS[s], SPOT_Z, 1.7 * SPOT_SCALE, 0.25 * SPOT_SCALE, RATING_COL.miss, 1.1, 0, 0.38, 0);
+    }
+    weighSides(player, playerCount < 2);
+    for (let s = 0; s < 2; s++) missAmt[s] = Math.max(missAmt[s], sideW[s]);
+    glowEdges(RATING_COL.miss, 0.5);
+    caKick = Math.max(caKick, 0.7);
+  }
+
+  /**
+   * Combo milestone: a celebration from the whole stage, led by the player who earned it.
+   * Two players reaching a milestone on the same move each get their own spot and cannons but
+   * share ONE centre sweep, ring behind NOVA and glitter (doubling those would only add glare
+   * around the coach).
+   */
+  function fireCombo(player, combo) {
+    const level = clamp(0.7 + 0.03 * finite(Number(combo), 10), 0.8, 1.3); // 5 -> 0.85, 10 -> 1.0, 20+ -> 1.3
+    const gold = RATING_COL.combo;
+    const shared = clock - comboAt < 0.09 && level <= comboLevel;
+    if (!shared) {
+      comboAt = clock;
+      comboLevel = level;
+    }
+    // spark cannons at both flanks, outside the avatars and inside the frame on any aspect ratio
+    const halfWidth = Math.tan(THREE.MathUtils.degToRad(tuning.cameraFov) * 0.5) * camera.aspect * (playDist + 1.6);
+    const cannonX = clamp(halfWidth * 0.8, SPOT_X + 0.9, 3.9);
+    for (let s = 0; s < 2; s++) {
+      const mine = player < 0 || player === s;
+      const own = PLAYER_COL[player < 0 ? s : player];
+      const count = Math.round((mine ? 70 : 46) * level * tuning.fxSparks);
+      emitFountain(s === 0 ? -cannonX : cannonX, -1.6, 0.35, count, 3.4 * level, 1.5, 0.074, 1.5, gold, own, 0.4, s * 0.06);
+    }
+    // the floor sweeps out from the centre twice
+    if (!shared) {
+      emitRing(0, 0, 0.7, STAGE_RADIUS * 1.15, gold, 1.3 * level, 1.5, 0.9, 0);
+      emitRing(0, 0, 0.7, STAGE_RADIUS * 0.9, COL.white, 0.8 * level, 0.6, 0.8, 0.12);
+    }
+    // the scoring avatar's own spot (both spots on a whole-stage call)
+    for (let s = 0; s < 2; s++) {
+      if (player >= 0 && player !== s) continue;
+      const own = PLAYER_COL[s];
+      emitRing(SPOT_XS[s], SPOT_Z, 0.3 * SPOT_SCALE, 3.2, own, 1.3, 0.8, 0.6, 0.05);
+      fireColumn(s, 3.4 * level, 1.05, 0.62, own, gold);
+      if (1.2 >= padAmt[s]) padFlash[s].copy(own).lerp(gold, 0.6);
+      padAmt[s] = Math.max(padAmt[s], 1.2);
+      beamAmt[s] = Math.max(beamAmt[s], 0.8);
+    }
+    for (let s = 0; s < 2; s++) sideCol[s].copy(gold);
+    // a ripple runs outward along both pylon rows
+    pylonWaveAt = clock;
+    pylonWaveGain = level;
+    // rig, ribbons and sky; ring of light behind NOVA; glitter
+    lightFlash = Math.max(lightFlash, 0.55 * level);
+    flashCol.copy(gold);
+    fanFlash = Math.max(fanFlash, 1);
+    ribbonFlash = Math.max(ribbonFlash, 1);
+    skyFlash = Math.max(skyFlash, 0.5);
+    if (!shared) {
+      emitWave(0, 1.15, 0, 0.5, 4.2 * level, gold, 1.5, 1.0, 0.85, 0);
+      emitWave(0, 1.15, 0, 0.4, 2.8 * level, COL.white, 0.9, 0.7, 0.7, 0.1);
+      emitRain(Math.round(50 * level * tuning.fxSparks), gold, COL.white);
+    }
+    weighSides(player, false);
+    sideW[0] = Math.max(sideW[0], 0.6);
+    sideW[1] = Math.max(sideW[1], 0.6);
+    glowEdges(gold, 0.7);
+    camPunch = Math.max(camPunch, 0.4);
+    caKick = Math.max(caKick, 0.4);
+  }
+
+  /**
+   * Rating / combo feedback.
+   *   kind:   'ok' | 'good' | 'super' | 'perfect' | 'gold' | 'miss' | 'combo'
+   *   opts.player: 0 (P1, screen-left spot) | 1 (P2, screen-right spot). Omitted = the whole
+   *           stage: the effect fires at both flanks.
+   *   opts.combo:  optional combo count for 'combo' (bigger milestones celebrate harder).
+   * The ladder OK < GOOD < SUPER < PERFECT < gold grows in ring count and reach, fountain
+   * height, column height and how much of the stage joins in (see LADDER).
+   */
+  function pulse(kind, opts) {
+    const raw = opts && typeof opts === 'object' ? opts.player : undefined;
+    const player = raw === 0 || raw === 1 ? raw : -1;
+    if (kind === 'miss') fireMiss(player);
+    else if (kind === 'combo') fireCombo(player, opts && typeof opts === 'object' ? opts.combo : undefined);
+    else if (typeof kind === 'string' && Object.prototype.hasOwnProperty.call(ladder, kind)) fireHit(kind, player);
+    commitSparks();
   }
 
   // ---------- update ----------
@@ -1828,19 +2562,31 @@ export function createStage(canvas) {
     highSm += (highIn - highSm) * damp(highIn > highSm ? 30 : 7, delta);
 
     // --- feedback envelopes ---
-    hitAmt *= Math.exp(-delta * 3.2);
+    const fxPower = tuning.fxPower;
+    for (let s = 0; s < 2; s++) {
+      edgeAmt[s] *= Math.exp(-delta * 3.4);
+      missAmt[s] *= Math.exp(-delta * 3.0);
+      beamAmt[s] *= Math.exp(-delta * 4.2);
+      pylonAmt[s] *= Math.exp(-delta * 4.6);
+      padAmt[s] *= Math.exp(-delta * 3.6);
+      const padTarget = playing && s < playerCount ? 1 : 0;
+      padOn[s] += (padTarget - padOn[s]) * damp(4, delta);
+    }
     lightFlash *= Math.exp(-delta * 5.0);
+    fanFlash *= Math.exp(-delta * 3.6);
+    ribbonFlash *= Math.exp(-delta * 2.8);
+    skyFlash *= Math.exp(-delta * 3.4);
     camPunch *= Math.exp(-delta * 4.0);
     starFlare *= Math.exp(-delta * 1.8);
-    missAmt *= Math.exp(-delta * 2.6);
     caKick *= Math.exp(-delta * 5.0);
+    const missMax = Math.max(missAmt[0], missAmt[1]);
 
     const starPower = tuning.starPower * look.star * (1 + rise * 0.25);
 
     // --- sky ---
     const su = skyMat.uniforms;
     setU(su, 'uTime', clock);
-    setU(su, 'uNebula', look.nebula);
+    setU(su, 'uNebula', look.nebula * (1 + skyFlash * 0.9 * fxPower));
     setU(su, 'uStarPower', starPower);
     setU(su, 'uDiscGain', tuning.discPower);
     setU(su, 'uKick', kick * energy);
@@ -1861,25 +2607,39 @@ export function createStage(canvas) {
     setU(fu, 'uBeatPhase', beatPhase);
     setU(fu, 'uBeatIndex', ((beatFloor % 64) + 64) % 64);
     setU(fu, 'uEnergy', energy);
-    setU(fu, 'uFlash', lightFlash);
+    setU(fu, 'uFlash', lightFlash * fxPower);
+    setU(fu, 'uFlashCol', flashCol);
     setU(fu, 'uReflStrength', tuning.floorReflectivity);
     setU(fu, 'uColA', look.a);
     setU(fu, 'uColB', look.b);
     setU(fu, 'uColC', look.c);
+    // avatars' pads: the player's colour, breathing with the kick, flaring on a hit, and
+    // guttering toward the MISS colour when that player misses
+    for (let s = 0; s < 2; s++) {
+      const on = padOn[s] * tuning.padPower;
+      const glow = padAmt[s];
+      const gutter = missAmt[s];
+      _c1.copy(PLAYER_COL[s]).lerp(padFlash[s], clamp01(glow));
+      _c1.lerp(RATING_COL.miss, gutter * 0.85);
+      const flicker = 1 - gutter * (0.55 + 0.35 * Math.sin(clock * 46));
+      padColors[s].copy(_c1).multiplyScalar(on * flicker * fxPower);
+      padUniforms[s].set(SPOT_XS[s], SPOT_Z, PAD_RADIUS * SPOT_SCALE * (0.4 + 0.6 * padOn[s]) * (1 + 0.06 * glow), 0.1 + 0.14 * kick + glow);
+    }
 
     // --- lights ---
     const accent = kick * energy;
     hemi.color.copy(HEMI_SKY).lerp(look.a, 0.22);
     hemi.intensity = 1.0 + 0.25 * energy;
-    keyLight.intensity = 2.15 + 0.35 * energy + lightFlash * 1.1 - missAmt * 0.6;
+    keyLight.intensity = 2.15 + 0.35 * energy + lightFlash * 1.1 - missMax * 0.6;
     backLight.color.copy(STAR_CORE).lerp(look.c, 0.2);
     backLight.intensity = (2.6 + 1.2 * accent + starFlare * 3.0) * clamp(starPower, 0.5, 1.5);
     rimL.color.copy(look.b);
     rimR.color.copy(look.a);
     const rimBase = 2.2 + 0.9 * energy;
     const alt = (((beatFloor % 2) + 2) % 2) === 0 ? 1 : 0; // alternate the kickers on each beat
-    rimL.intensity = rimBase + accent * (0.5 + 1.1 * alt) + lightFlash * 1.5;
-    rimR.intensity = rimBase + accent * (0.5 + 1.1 * (1 - alt)) + lightFlash * 1.5;
+    // a hit on a flank also kicks NOVA's rim light from that side (light on her edge, never a veil)
+    rimL.intensity = rimBase + accent * (0.5 + 1.1 * alt) + lightFlash * 1.5 + beamAmt[0] * 1.2;
+    rimR.intensity = rimBase + accent * (0.5 + 1.1 * (1 - alt)) + lightFlash * 1.5 + beamAmt[1] * 1.2;
 
     // --- beams ---
     beamPhase += delta * bps * (Math.PI / 8) * look.sweep;
@@ -1891,15 +2651,30 @@ export function createStage(canvas) {
       const psi = f * 0.8 + 0.55 * Math.sin(beamPhase + i * 1.05) * mirror;
       const rho = 3.0 + 1.6 * Math.sin(beamPhase * 0.5 + i * 2.1);
       // targets always land behind the dancer so no beam crosses in front of her
-      const tx = Math.sin(psi) * rho * 1.55;
-      const tz = -1.3 - Math.abs(Math.cos(psi)) * rho * 0.8;
-      const col = i % 3 === 2 ? look.c : i % 2 ? look.b : look.a;
+      let tx = Math.sin(psi) * rho * 1.55;
+      let tz = -1.3 - Math.abs(Math.cos(psi)) * rho * 0.8;
+      let col = i % 3 === 2 ? look.c : i % 2 ? look.b : look.a;
       const chase = lerp(1, i === chaseIdx ? 1.35 : 0.3, look.strobe);
-      const inten = beamBase * (0.55 + 0.45 * kick) * chase + lightFlash * 0.5;
-      setBeam(i, tx, 0.0, tz, 0.55 + 0.25 * energy, col, inten);
+      let inten = beamBase * (0.55 + 0.45 * kick) * chase + lightFlash * 0.5;
+      let radius = 0.55 + 0.25 * energy;
+      // a hit on this flank: its three beams drop what they are doing and slam onto that
+      // avatar's spot in the hit colour (the spot is beside and behind NOVA, like every target)
+      const side = i < BEAM_TOP / 2 ? 0 : 1;
+      const slam = beamAmt[side];
+      if (slam > 0.01) {
+        const w = clamp01(slam * 1.6);
+        tx = lerp(tx, SPOT_XS[side] + ((i % 3) - 1) * 0.3, w);
+        tz = lerp(tz, SPOT_Z - 0.6, w);
+        col = _c2.copy(col).lerp(sideCol[side], w);
+        inten += slam * tuning.sideBeams * fxPower;
+        radius = lerp(radius, 0.62, w);
+      }
+      inten *= 1 - 0.7 * missAmt[side];
+      setBeam(i, tx, 0.0, tz, radius, col, inten);
     }
-    const fanOpen = 0.25 + 0.75 * (0.35 * energy + 0.65 * kick);
+    const fanOpen = Math.min(1, 0.25 + 0.75 * (0.35 * energy + 0.65 * kick) + fanFlash * 0.6);
     const fanChase = ((beatFloor % BEAM_FAN) + BEAM_FAN) % BEAM_FAN;
+    const fanTint = clamp01(fanFlash * 1.2);
     for (let i = 0; i < BEAM_FAN; i++) {
       const bi = BEAM_TOP + i;
       const f = (i / (BEAM_FAN - 1)) * 2 - 1;
@@ -1907,9 +2682,10 @@ export function createStage(canvas) {
       const k = bi * 3;
       const len = 30;
       _v2.set(Math.sin(alpha), Math.cos(alpha), -0.3).normalize();
-      const col = i % 2 ? look.c : look.b;
+      const col = _c2.copy(i % 2 ? look.c : look.b).lerp(flashCol, fanTint);
       const chase = lerp(1, i === fanChase || i === BEAM_FAN - 1 - fanChase ? 1.3 : 0.4, look.strobe);
-      const inten = beamBase * 0.62 * (0.4 + 0.6 * kick) * chase + lightFlash * 0.35;
+      // stage-wide answer (PERFECT / gold / combo): the whole fan at the back rim fires at once
+      const inten = (beamBase * 0.62 * (0.4 + 0.6 * kick) * chase + lightFlash * 0.35 + fanFlash * 1.5 * fxPower) * (1 - 0.5 * missMax);
       setBeam(bi, lampPos[k] + _v2.x * len, lampPos[k + 1] + _v2.y * len, lampPos[k + 2] + _v2.z * len, 1.5, col, inten);
     }
     beams.instanceMatrix.needsUpdate = true;
@@ -1921,14 +2697,25 @@ export function createStage(canvas) {
     // --- pylons ---
     const half = PYLON_COUNT / 2;
     const stepIdx = Math.floor(beat * 2);
+    const waveAge = clock - pylonWaveAt; // combo ripple: a bump travelling outward along both rows
+    const waveOn = waveAge >= 0 && waveAge < 0.9;
     for (let i = 0; i < PYLON_COUNT; i++) {
       const g = pylonBand[i];
+      const side = i < half ? 0 : 1;
       const tri = 1 - Math.abs(g * 2 - 1);
       let band = bassSm * (1 - g) * (1 - g) + midSm * tri + highSm * g * g;
       band += kick * (1 - g) * 0.5;
       const jitter = 0.55 + 0.45 * Math.sin(pylonSeed[i] * 91.7 + stepIdx * 2.399);
       const idle = 0.16 + 0.1 * Math.sin(clock * 1.3 + (i % half) * 0.7);
-      const targetH = idle + clamp01(band) * jitter * (1.2 + 1.5 * energy);
+      let targetH = idle + clamp01(band) * jitter * (1.2 + 1.5 * energy);
+      // a hit makes that flank jump (the stacks nearest the stage highest); a MISS drops it
+      let jump = pylonAmt[side] * (1 - 0.45 * g) * (0.8 + 0.2 * pylonSeed[i]);
+      if (waveOn) {
+        const x = g - waveAge * 1.5;
+        jump += Math.exp(-x * x * 22) * pylonWaveGain * (1 - waveAge / 0.9);
+      }
+      targetH += jump * tuning.pylonJump * fxPower;
+      targetH *= 1 - 0.8 * missAmt[side];
       const h0 = pylonH[i];
       const hNew = h0 + (targetH - h0) * damp(targetH > h0 ? 22 : 6, delta);
       pylonH[i] = hNew;
@@ -1941,16 +2728,62 @@ export function createStage(canvas) {
     pylons.instanceMatrix.needsUpdate = true;
     setU(pylonMat.uniforms, 'uColA', look.a);
     setU(pylonMat.uniforms, 'uColB', look.b);
-    setU(pylonMat.uniforms, 'uPower', 0.55 + 0.9 * energy + 0.5 * kick + lightFlash);
+    setU(pylonMat.uniforms, 'uPower', (0.55 + 0.9 * energy + 0.5 * kick + lightFlash) * (1 - 0.4 * missMax));
+    const waveGlow = waveOn ? pylonWaveGain * (1 - waveAge / 0.9) : 0;
+    _h4.set(sideCol[0].r, sideCol[0].g, sideCol[0].b, Math.min(1.6, pylonAmt[0] + waveGlow) * fxPower);
+    setU(pylonMat.uniforms, 'uHitL', _h4);
+    _h4.set(sideCol[1].r, sideCol[1].g, sideCol[1].b, Math.min(1.6, pylonAmt[1] + waveGlow) * fxPower);
+    setU(pylonMat.uniforms, 'uHitR', _h4);
 
     // --- ribbons ---
     const rbu = ribbonMat.uniforms;
+    const ribbonTint = clamp01(ribbonFlash * 0.8);
     setU(rbu, 'uTime', clock);
     setU(rbu, 'uMid', midSm);
-    setU(rbu, 'uPower', look.ribbons * (0.3 + 0.35 * energy + 0.3 * midSm + 0.15 * kick));
-    setU(rbu, 'uColA', look.a);
-    setU(rbu, 'uColB', look.b);
+    setU(rbu, 'uPower', look.ribbons * (0.3 + 0.35 * energy + 0.3 * midSm + 0.15 * kick) + ribbonFlash * 0.9 * fxPower);
+    setU(rbu, 'uColA', _c1.copy(look.a).lerp(flashCol, ribbonTint));
+    setU(rbu, 'uColB', _c1.copy(look.b).lerp(flashCol, ribbonTint * 0.6));
     setU(rbu, 'uColC', look.c);
+
+    // --- light columns ---
+    if (columns.visible) {
+      let burning = false;
+      for (let s = 0; s < 2; s++) {
+        const age = clock - columnBirth[s];
+        const life = columnTime[s];
+        let height = 0;
+        let gain = 0;
+        let radius = COLUMN_RADIUS * SPOT_SCALE;
+        if (age >= 0 && age < life) {
+          const t = age / life;
+          const up = 1 - Math.pow(1 - clamp01(age / 0.1), 3); // shoots up in a tenth of a second
+          height = columnHeight[s] * up;
+          gain = columnGain[s] * Math.pow(1 - t, 1.7) * (0.88 + 0.12 * Math.sin(age * 41));
+          radius *= 0.85 + 0.4 * t; // swells as it fades
+          burning = true;
+        }
+        _p.set(SPOT_XS[s], 0.01, SPOT_Z);
+        _q.identity();
+        _s.set(radius, Math.max(height, 1e-3), radius);
+        if (gain <= 0) _s.set(0, 0, 0);
+        _m.compose(_p, _q, _s);
+        columns.setMatrixAt(s, _m);
+        const j = s * 4;
+        columnColA[j] = columnBase[s].r;
+        columnColA[j + 1] = columnBase[s].g;
+        columnColA[j + 2] = columnBase[s].b;
+        columnColA[j + 3] = gain * fxPower;
+        columnColB[j] = columnTop[s].r;
+        columnColB[j + 1] = columnTop[s].g;
+        columnColB[j + 2] = columnTop[s].b;
+      }
+      columns.instanceMatrix.needsUpdate = true;
+      columnAttrA.needsUpdate = true;
+      columnAttrB.needsUpdate = true;
+      setU(columnMat.uniforms, 'uTime', clock);
+      setU(columnMat.uniforms, 'uPower', tuning.columnPower);
+      if (!burning) columns.visible = false;
+    }
 
     // --- particles ---
     setU(dustMat.uniforms, 'uTime', clock);
@@ -1978,22 +2811,24 @@ export function createStage(canvas) {
     let shiftTarget = 0; // lateral view shift (fraction of the width); 0 in play
     const wideAspect = smooth01(1.25, 1.6, viewW / Math.max(viewH, 1));
     camera.up.set(0, 1, 0);
+    punchSm += (camPunch - punchSm) * damp(camPunch > punchSm ? 60 : 14, delta);
     if (mode === 'play') {
       // Front camera. Every offset here is bounded by what computePlayDistance() assumed,
-      // so the dancer's whole reach box stays inside the safe frame on every aspect ratio.
+      // so NOVA's and the avatars' whole reach boxes stay inside the safe frame on every
+      // aspect ratio.
       const sway = Math.sin(beat * (Math.PI / 8)) * tuning.playSway;
       const bob = Math.sin(beat * (Math.PI / 4)) * PLAY_BOB;
-      const dollyIn = clamp(tuning.playDollyBeat * kick * energy + camPunch * 0.13, 0, PLAY_DOLLY_MAX_IN);
+      const dollyIn = clamp(tuning.playDollyBeat * kick * energy, 0, PLAY_BEAT_DOLLY_MAX);
       const breathe = 0.12 * (1 - energy); // sits a touch further back in quiet sections
       desPos.set(sway, PLAY_CAM_HEIGHT + bob, playDist + breathe - dollyIn);
       desTgt.set(0, PLAY_TARGET_Y, 0);
-      const roll = Math.sin(beat * (Math.PI / 8) + 1.0) * 0.006;
+      const roll = Math.sin(beat * (Math.PI / 8) + 1.0) * 0.006 + Math.sin(clock * 37) * punchSm * 0.004;
       camera.up.set(Math.sin(roll), Math.cos(roll), 0);
       follow = 9;
     } else if (mode === 'results') {
       // hero shot: closer, low, NOVA in the left third (the score panel sits on the right)
       const ang = Math.sin(clock * 0.2) * 0.26 - 0.1;
-      const rad = playDist * 0.8 + Math.sin(clock * 0.13) * 0.2;
+      const rad = soloDist * 0.8 + Math.sin(clock * 0.13) * 0.2;
       desPos.set(Math.sin(ang) * rad, 0.9 + Math.sin(clock * 0.17) * 0.1, Math.cos(ang) * rad);
       desTgt.set(0, 1.12, 0);
       follow = 2.2;
@@ -2001,7 +2836,7 @@ export function createStage(canvas) {
     } else {
       // menu: slow arc across the front of the stage; her face always stays toward the lens
       const ang = Math.sin(clock * 0.14) * 0.42 + Math.sin(clock * 0.047 + 1.3) * 0.06 + 0.12;
-      const rad = playDist * 1.0 + Math.sin(clock * 0.11) * 0.4;
+      const rad = soloDist * 1.0 + Math.sin(clock * 0.11) * 0.4;
       desPos.set(Math.sin(ang) * rad, 1.25 + Math.sin(clock * 0.09 + 0.6) * 0.25, Math.cos(ang) * rad);
       desTgt.set(0, 1.08 + Math.sin(clock * 0.07) * 0.06, 0);
       follow = 2.2;
@@ -2026,6 +2861,15 @@ export function createStage(canvas) {
     }
     if (camPos.y < 0.25) camPos.y = 0.25; // never dip to the mirror plane
     camera.position.copy(camPos);
+    if (mode === 'play' && punchSm > 1e-3) {
+      // hit punch (PERFECT / gold / combo): a snap toward the stage and a short shake, applied
+      // on top of the smoothed move so it lands on the frame of the hit
+      // (both are capped at what the framing assumed, whatever the ladder / tuning is set to)
+      const shake = Math.min(punchSm, 1) * PLAY_SHAKE;
+      camera.position.z -= clamp(punchSm * tuning.punch, 0, PLAY_PUNCH_MAX);
+      camera.position.x += Math.sin(clock * 53) * shake;
+      camera.position.y += Math.cos(clock * 41) * shake * 0.6;
+    }
     camera.lookAt(camTgt);
     camera.updateMatrixWorld(true);
 
@@ -2034,7 +2878,7 @@ export function createStage(canvas) {
 
     // --- post ---
     if (bloomPass) {
-      bloomPass.strength = tuning.bloomStrength + 0.1 * kick * energy + starFlare * 0.12 + lightFlash * 0.04;
+      bloomPass.strength = tuning.bloomStrength + 0.1 * kick * energy + starFlare * 0.12 + lightFlash * 0.06;
       bloomPass.radius = tuning.bloomRadius;
       bloomPass.threshold = tuning.bloomThreshold;
     }
@@ -2047,13 +2891,15 @@ export function createStage(canvas) {
       setU(finalU, 'uRayStrength', tuning.rayStrength * smooth01(0.25, 0.7, facing) * clamp(starPower, 0, 1.6) * (0.75 + 0.25 * energy + starFlare));
       setU(finalU, 'uRayDensity', tuning.rayDensity);
       setU(finalU, 'uTime', clock);
-      setU(finalU, 'uExposure', tuning.exposure * (1 + lightFlash * 0.06 - missAmt * 0.12));
-      setU(finalU, 'uVignette', tuning.vignette + missAmt * 0.18);
+      setU(finalU, 'uExposure', tuning.exposure * (1 + lightFlash * 0.08));
+      setU(finalU, 'uVignette', tuning.vignette + missMax * 0.18);
       setU(finalU, 'uCA', tuning.chromaticAberration * (1 + caKick * 2.2 + kick * energy * 0.35));
       setU(finalU, 'uGrain', tuning.grain);
-      setU(finalU, 'uHit', hitAmt);
-      setU(finalU, 'uHitColor', hitColor);
-      setU(finalU, 'uSaturation', 1.06 - missAmt * 0.45);
+      // rating glow on the frame edges, per side; MISS dip of that player's half
+      const glow = tuning.edgeGlow * fxPower;
+      setU(finalU, 'uHitL', _c1.copy(edgeCol[0]).multiplyScalar(edgeAmt[0] * glow));
+      setU(finalU, 'uHitR', _c1.copy(edgeCol[1]).multiplyScalar(edgeAmt[1] * glow));
+      if (finalU.uMiss) finalU.uMiss.value.set(missAmt[0] * tuning.missDip, missAmt[1] * tuning.missDip);
     }
   }
 
@@ -2107,6 +2953,9 @@ export function createStage(canvas) {
   function dispose() {
     nebulaRT.dispose();
     reflRT.dispose();
+    // EffectComposer.dispose() frees its own targets only; the passes hold targets / materials too
+    if (typeof bloomPass.dispose === 'function') bloomPass.dispose();
+    if (typeof finalPass.dispose === 'function') finalPass.dispose();
     composer.dispose();
     world.traverse((o) => {
       if (o.geometry) o.geometry.dispose();
@@ -2129,14 +2978,27 @@ export function createStage(canvas) {
     resize,
     pulse,
     setMode,
+    setPlayers,
+    getPlayerSpots: (n) => getPlayerSpots(n === undefined ? playerCount : n),
     // extras (not required by the contract)
     tuning,
+    ladder, // the hit ladder (per-rating effect sizes); live, safe to tweak
+    ratingColors: RATING_COL, // THREE.Color per rating, used by every hit effect; live
+    playerColors: PLAYER_COL,
     dispose,
     get mode() {
       return mode;
     },
+    get playerCount() {
+      return playerCount;
+    },
+    /** Camera distance of the play shot for the current player count and aspect ratio. */
     get playDistance() {
       return playDist;
+    },
+    /** Camera distance NOVA alone would need (the v1 play shot; menu and results build on it). */
+    get soloDistance() {
+      return soloDist;
     },
   };
 }

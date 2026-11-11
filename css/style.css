@@ -99,6 +99,35 @@ body {
 .sf [data-rating="ok"] { --rc: #d5d8ff; }
 .sf [data-rating="miss"] { --rc: #ff5a6e; }
 
+/* ------------------------------------------------------------------ one or two players */
+
+/* js/hud.js sets data-players="1|2" on the root; P1 is teal (screen-left), P2 coral (screen-right) */
+.sf [data-player="0"] { --pc: #19e3d2; --pc-glow: rgba(25, 227, 210, 0.55); }
+.sf [data-player="1"] { --pc: #ff5a6e; --pc-glow: rgba(255, 90, 110, 0.55); }
+
+.sf:not([data-players="2"]) .only-2p,
+.sf[data-players="2"] .only-1p {
+  display: none !important;
+}
+
+.pbadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  height: calc(var(--u) * 1.5);
+  padding: 0 calc(var(--u) * 0.55);
+  border-radius: calc(var(--u) * 0.3);
+  background: var(--pc);
+  color: var(--ink);
+  font: 900 calc(var(--u) * 0.86) / 1 var(--font-display);
+  letter-spacing: 0.02em;
+  transform: skewX(-12deg);
+}
+
+.pbadge--0 { --pc: var(--teal); }
+.pbadge--1 { --pc: var(--coral); }
+
 /* ------------------------------------------------------------------ screens */
 
 .screen {
@@ -309,6 +338,31 @@ body {
   padding: 0 calc(var(--u) * 1.8);
   font-size: calc(var(--u) * 1.08);
 }
+
+/* "2인 플레이": outlined in both player colours */
+.btn--duo .btn__bg {
+  border: calc(var(--u) * 0.12) solid transparent;
+  background:
+    linear-gradient(rgba(16, 9, 44, 0.8), rgba(16, 9, 44, 0.8)) padding-box,
+    linear-gradient(100deg, var(--teal) 0%, var(--violet-soft) 50%, var(--coral) 100%) border-box;
+  box-shadow: 0 0 calc(var(--u) * 1.6) rgba(106, 61, 240, 0.4);
+}
+
+.btn--duo .btn__bg::after {
+  background: linear-gradient(100deg, rgba(25, 227, 210, 0.32), rgba(255, 90, 110, 0.32));
+}
+
+.btn--duo .btn__label svg { color: #ffffff; }
+
+/* the demo is the third choice on the title: present, but quieter than the two play modes */
+.btn--quiet { font-weight: 500; }
+
+.btn--quiet .btn__bg {
+  background: rgba(11, 6, 32, 0.38);
+  box-shadow: inset 0 0 0 calc(var(--u) * 0.08) rgba(190, 176, 255, 0.5);
+}
+
+.btn--quiet .btn__label svg { color: var(--violet-soft); }
 
 .linkbtn {
   border: 0;
@@ -632,8 +686,10 @@ body {
 
 .title__actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: calc(var(--u) * 1.6);
+  gap: calc(var(--u) * 1.1) calc(var(--u) * 1.5);
+  max-width: calc(var(--u) * 46); /* 1P + 2P side by side, the demo on its own line below */
   padding-left: calc(var(--u) * 0.5);
   margin-top: calc(var(--u) * 0.5);
 }
@@ -643,7 +699,9 @@ body {
   color: rgba(226, 218, 255, 0.55);
 }
 
-.howto {
+/* two-class selector on purpose: the ".sf ol" reset would otherwise zero this padding
+   (it did in v1, which left the cards flush against the screen edges) */
+.sf .howto {
   position: relative;
   flex: 0 0 auto;
   display: grid;
@@ -694,6 +752,9 @@ body {
   color: var(--muted);
 }
 
+.howto strong,
+.howto span { word-break: keep-all; }
+
 /* ------------------------------------------------------------------ camera */
 
 .screen--camera {
@@ -721,6 +782,7 @@ body {
 .sf[data-screen="camera"] .cam__side > *:nth-child(4) { animation-delay: 180ms; }
 .sf[data-screen="camera"] .cam__side > *:nth-child(5) { animation-delay: 240ms; }
 .sf[data-screen="camera"] .cam__side > *:nth-child(6) { animation-delay: 300ms; }
+.sf[data-screen="camera"] .cam__side > *:nth-child(7) { animation-delay: 360ms; }
 
 .cam__frame {
   position: relative;
@@ -1000,7 +1062,163 @@ body {
 .screen--camera[data-error] .cam__badge,
 .screen--camera[data-error] .corner { opacity: 0.18; }
 
+/* camera setup v2: the upper body is enough, and two players get a half of the frame each */
+.modepill {
+  margin-left: calc(var(--u) * 0.5);
+  padding: calc(var(--u) * 0.32) calc(var(--u) * 0.75);
+  border-radius: calc(var(--u) * 2);
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+  font: 700 calc(var(--u) * 0.78) / 1 var(--font-ko);
+  font-style: normal;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.sf[data-players="2"] .modepill {
+  background: linear-gradient(100deg, rgba(25, 227, 210, 0.32), rgba(255, 90, 110, 0.36));
+}
+
+.cam__h > span { display: block; }
+
+.cam__slots {
+  position: absolute;
+  inset: 0;
+  display: none;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.sf[data-players="2"] .cam__slots { display: block; }
+
+.cam__divider {
+  position: absolute;
+  left: 50%;
+  top: 7%;
+  bottom: 7%;
+  width: 0;
+  border-left: calc(var(--u) * 0.14) dashed rgba(246, 241, 255, 0.5);
+}
+
+.cam__slot {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 50%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: calc(var(--u) * 0.6);
+  padding-bottom: calc(var(--u) * 3.7);
+}
+
+.cam__slot--0 { left: 0; --pc: var(--teal); }
+.cam__slot--1 { right: 0; --pc: var(--coral); }
+
+.cam__slot::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(0deg, var(--pc) 0%, transparent 46%);
+  opacity: 0.1;
+  transition: opacity 0.3s ease;
+}
+
+.cam__slot.is-ready::before { opacity: 0.38; }
+
+.cam__slot .pbadge,
+.cam__slot em {
+  position: relative;
+}
+
+.cam__slot em {
+  height: calc(var(--u) * 1.5);
+  font: 900 calc(var(--u) * 1) / calc(var(--u) * 1.5) var(--font-ko);
+  font-style: normal;
+  color: #ffffff;
+  text-shadow: 0 0 calc(var(--u) * 0.6) rgba(11, 6, 32, 0.95), 0 0 calc(var(--u) * 0.2) rgba(11, 6, 32, 0.95);
+}
+
+.screen--camera[data-error] .cam__slots { opacity: 0.18; }
+
+/* per-player status chips (2P) replace the single meter */
+.pchips {
+  display: none;
+  flex-direction: column;
+  gap: calc(var(--u) * 0.8);
+  width: 100%;
+}
+
+.sf[data-players="2"] .pchips { display: flex; }
+.sf[data-players="2"] .screen--camera .meter { display: none; }
+
+.pchip {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  column-gap: calc(var(--u) * 0.9);
+  row-gap: calc(var(--u) * 0.6);
+  padding: calc(var(--u) * 0.8) calc(var(--u) * 1.2) calc(var(--u) * 0.85) calc(var(--u) * 1);
+  border-radius: calc(var(--u) * 0.35) calc(var(--u) * 1.3) calc(var(--u) * 0.35) calc(var(--u) * 0.35);
+  background: rgba(21, 12, 58, 0.8);
+  box-shadow: inset 0 0 0 1px rgba(190, 176, 255, 0.28), inset calc(var(--u) * 0.24) 0 0 var(--pc);
+}
+
+/* "ready" outline + glow in the player's colour; fades in (opacity only) */
+.pchip::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 calc(var(--u) * 0.14) var(--pc), 0 0 calc(var(--u) * 1.6) var(--pc-glow);
+  opacity: 0;
+  transition: opacity 0.25s ease;
+  pointer-events: none;
+}
+
+.pchip__text {
+  font-size: calc(var(--u) * 1.05);
+  font-weight: 700;
+  line-height: 1.2;
+  color: #ffffff;
+  word-break: keep-all;
+}
+
+.pchip__bar {
+  grid-column: 1 / -1;
+  display: block;
+  height: calc(var(--u) * 0.5);
+  border-radius: calc(var(--u) * 0.2);
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+  transform: skewX(-24deg);
+}
+
+.pchip__bar i {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--pc);
+  transform: scaleX(0);
+  transform-origin: left center;
+}
+
+.pchip[data-state="partial"] .pchip__text,
+.pchip[data-state="side"] .pchip__text { color: var(--gold); }
+
+.pchip[data-state="ready"]::after { opacity: 1; }
+
+.pchip[data-state="ready"] .pchip__text { color: var(--pc); }
+
+.screen--camera[data-error] .pchips { opacity: 0.18; }
+
 /* ------------------------------------------------------------------ play HUD */
+
+/* its own stacking context: the z-index of the score corners must never lift them above the
+   countdown / pause / results layers that follow this screen in the DOM */
+.screen--play { isolation: isolate; }
 
 .screen--play::before {
   content: "";
@@ -1013,30 +1231,85 @@ body {
   pointer-events: none;
 }
 
+/* per-player corner: P1 top-left, P2 top-right (2P only). Score, live card (2P), combo.
+   z-index: the corner (and the points flying into it) stays readable above the burst glow. */
 .scorebox {
   position: absolute;
-  left: calc(var(--u) * 3);
   top: calc(var(--u) * 2.3);
+  z-index: 2;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
 }
 
+/* 2P: the corner ends at 14.1u (badge row 1.5 + 0.5 + digits 2.9 + 0.7 + card 6.6, from 1.9u),
+   which leaves the band above the avatars' heads free for the rating bursts */
+.sf[data-players="2"] .scorebox { top: calc(var(--u) * 1.9); }
+
+.scorebox--p0 { left: calc(var(--u) * 3); }
+
+.scorebox--p1 {
+  right: calc(var(--u) * 3);
+  align-items: flex-end;
+  display: none;
+}
+
+.sf[data-players="2"] .scorebox--p1 { display: flex; }
+
+.scorebox__head {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--u) * 0.7);
+  min-height: calc(var(--u) * 0.74);
+}
+
+.scorebox--p1 .scorebox__head { flex-direction: row-reverse; }
+
+.scorebox .pbadge { display: none; }
+.sf[data-players="2"] .scorebox .pbadge { display: inline-flex; }
+
 .scorebox__label {
   font: 600 calc(var(--u) * 0.74) / 1 var(--font-display);
   letter-spacing: 0.34em;
-  color: var(--teal);
+  color: var(--pc, var(--teal));
   padding-left: calc(var(--u) * 0.2);
 }
 
+.scorebox__score {
+  position: relative;
+  width: max-content;
+  margin-top: calc(var(--u) * 0.5);
+}
+
+/* lights up behind the digits when flying points land */
+.scorebox__flash {
+  position: absolute;
+  left: calc(var(--u) * -2);
+  right: calc(var(--u) * -2);
+  top: calc(var(--u) * -1.4);
+  bottom: calc(var(--u) * -1.4);
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(255, 226, 150, 0.7) 0%, rgba(255, 194, 74, 0.3) 45%, rgba(255, 194, 74, 0) 100%);
+  opacity: 0;
+  pointer-events: none;
+  will-change: opacity;
+}
+
 .digits {
+  position: relative;
   display: flex;
   align-items: flex-end;
-  margin-top: calc(var(--u) * 0.5);
   font: 800 calc(var(--u) * 3.2) / 1 var(--font-display);
   color: #ffffff;
   text-shadow: 0 0 calc(var(--u) * 1) rgba(106, 61, 240, 0.9), 0 calc(var(--u) * 0.12) 0 rgba(11, 6, 32, 0.6);
   transform-origin: left center;
+}
+
+.scorebox--p1 .digits { transform-origin: right center; }
+
+.sf[data-players="2"] .digits {
+  font-size: calc(var(--u) * 2.9);
+  text-shadow: 0 0 calc(var(--u) * 1) var(--pc-glow), 0 calc(var(--u) * 0.12) 0 rgba(11, 6, 32, 0.6);
 }
 
 .digits__sep {
@@ -1070,7 +1343,100 @@ body {
   text-align: center;
 }
 
+/* "+1,400": pops under the rating burst, then flies here (js/hud.js builds the path at layout time) */
+.fly {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: 900 calc(var(--u) * 1.9) / 1 var(--font-display);
+  color: #ffffff;
+  text-shadow:
+    0 0 calc(var(--u) * 0.9) var(--pc-glow),
+    0 calc(var(--u) * 0.14) 0 rgba(11, 6, 32, 0.9),
+    0 0 calc(var(--u) * 0.3) rgba(11, 6, 32, 0.9);
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+
+.fly.is-gold {
+  color: var(--gold-hot);
+  text-shadow:
+    0 0 calc(var(--u) * 1) rgba(255, 194, 74, 0.95),
+    0 calc(var(--u) * 0.14) 0 rgba(60, 26, 0, 0.9),
+    0 0 calc(var(--u) * 0.3) rgba(60, 26, 0, 0.9);
+}
+
+/* 2P live card: a small figure of the player's current pose + their sync meter (both on canvas) */
+.livecard {
+  display: none;
+  position: relative;
+  width: calc(var(--u) * 17);
+  height: calc(var(--u) * 6.6);
+  margin-top: calc(var(--u) * 0.9);
+  border-radius: calc(var(--u) * 0.4) calc(var(--u) * 1.4) calc(var(--u) * 0.4) calc(var(--u) * 0.4);
+  background: linear-gradient(100deg, rgba(21, 12, 58, 0.88), rgba(21, 12, 58, 0.52));
+  box-shadow: inset 0 0 0 1px rgba(190, 176, 255, 0.26), inset calc(var(--u) * 0.24) 0 0 var(--pc);
+  overflow: hidden;
+}
+
+.scorebox--p1 .livecard {
+  border-radius: calc(var(--u) * 1.4) calc(var(--u) * 0.4) calc(var(--u) * 0.4) calc(var(--u) * 0.4);
+  background: linear-gradient(260deg, rgba(21, 12, 58, 0.88), rgba(21, 12, 58, 0.52));
+  box-shadow: inset 0 0 0 1px rgba(190, 176, 255, 0.26), inset calc(var(--u) * -0.24) 0 0 var(--pc);
+}
+
+.sf[data-players="2"] .livecard {
+  display: block;
+  margin-top: calc(var(--u) * 0.7);
+}
+
+.livecard__canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  transition: opacity 0.2s ease;
+}
+
+.livecard__label {
+  position: absolute;
+  left: calc(var(--u) * 7.2);
+  top: calc(var(--u) * 1.75);
+  font-size: calc(var(--u) * 0.86);
+  font-weight: 900;
+  line-height: 1;
+  color: var(--muted);
+}
+
+.scorebox--p1 .livecard__label { left: auto; right: calc(var(--u) * 7.2); }
+
+.livecard__lost {
+  position: absolute;
+  left: calc(var(--u) * 7.2);
+  bottom: calc(var(--u) * 1);
+  padding: calc(var(--u) * 0.3) calc(var(--u) * 0.7);
+  border-radius: calc(var(--u) * 0.3);
+  background: var(--coral);
+  color: #ffffff;
+  font-size: calc(var(--u) * 0.85);
+  font-weight: 900;
+  line-height: 1;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.scorebox--p1 .livecard__lost { left: auto; right: calc(var(--u) * 7.2); }
+
+.livecard.is-lost .livecard__canvas { opacity: 0.4; }
+.livecard.is-lost .livecard__lost { opacity: 1; }
+
 .combo {
+  position: relative;
   display: flex;
   align-items: baseline;
   gap: calc(var(--u) * 0.6);
@@ -1084,9 +1450,51 @@ body {
   transition: opacity 0.2s ease;
 }
 
+.scorebox--p1 .combo {
+  flex-direction: row-reverse;
+  padding: calc(var(--u) * 0.5) calc(var(--u) * 0.9) calc(var(--u) * 0.5) calc(var(--u) * 1.3);
+  border-left: 0;
+  border-right: calc(var(--u) * 0.22) solid var(--gold);
+  background: linear-gradient(270deg, rgba(255, 194, 74, 0.2), rgba(255, 194, 74, 0) 70%), rgba(11, 6, 32, 0.58);
+  border-radius: calc(var(--u) * 1.4) 0 0 calc(var(--u) * 1.4);
+}
+
+/* 2P: the combo sits beside the live card (inner side), number left/right of a label + bonus stack */
+.sf[data-players="2"] .combo {
+  position: absolute;
+  left: calc(var(--u) * 17.8);
+  top: calc(var(--u) * 7.05); /* centred on the card: 5.6u + (6.6u - 3.7u) / 2 */
+  margin-top: 0;
+  display: grid;
+  grid-template-columns: auto auto;
+  grid-template-areas: "num label" "num mult";
+  align-items: center;
+  column-gap: calc(var(--u) * 0.6);
+  row-gap: calc(var(--u) * 0.35);
+}
+
+.sf[data-players="2"] .scorebox--p1 .combo {
+  left: auto;
+  right: calc(var(--u) * 17.8);
+  grid-template-areas: "label num" "mult num";
+}
+
+.sf[data-players="2"] .combo__num { grid-area: num; }
+.sf[data-players="2"] .combo__label { grid-area: label; }
+
+.sf[data-players="2"] .combo__mult {
+  grid-area: mult;
+  justify-self: start;
+  margin: 0;
+}
+
+.sf[data-players="2"] .scorebox--p1 .combo__label,
+.sf[data-players="2"] .scorebox--p1 .combo__mult { justify-self: end; }
+
 .combo.is-on { opacity: 1; }
 
 .combo__num {
+  position: relative;
   display: inline-block;
   font: 900 calc(var(--u) * 2.5) / 1 var(--font-display);
   color: var(--gold);
@@ -1094,15 +1502,36 @@ body {
   transform-origin: left bottom;
 }
 
+.scorebox--p1 .combo__num { transform-origin: right bottom; }
+
 .combo.is-hot .combo__num { color: var(--gold-hot); }
 
+/* ring that bursts out from behind the number on every hit */
+.combo__burst {
+  position: absolute;
+  left: calc(var(--u) * -0.4);
+  top: 50%;
+  width: calc(var(--u) * 4.6);
+  height: calc(var(--u) * 4.6);
+  margin-top: calc(var(--u) * -2.3);
+  border-radius: 50%;
+  border: calc(var(--u) * 0.26) solid var(--gold);
+  box-shadow: 0 0 calc(var(--u) * 1) rgba(255, 194, 74, 0.7);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.scorebox--p1 .combo__burst { left: auto; right: calc(var(--u) * -0.4); }
+
 .combo__label {
+  position: relative;
   font: 600 calc(var(--u) * 0.8) / 1 var(--font-display);
   letter-spacing: 0.22em;
   color: #ffffff;
 }
 
 .combo__mult {
+  position: relative;
   margin-left: calc(var(--u) * 0.5);
   padding: calc(var(--u) * 0.3) calc(var(--u) * 0.6);
   border-radius: calc(var(--u) * 0.3);
@@ -1112,6 +1541,8 @@ body {
   color: var(--muted);
   transform: skewX(-12deg);
 }
+
+.scorebox--p1 .combo__mult { margin-left: 0; margin-right: calc(var(--u) * 0.5); }
 
 .combo__mult.is-boost {
   background: var(--teal);
@@ -1236,12 +1667,25 @@ body {
   background: radial-gradient(circle, #ffffff 0%, #ffe9a8 35%, rgba(255, 194, 74, 0) 70%);
 }
 
+/* 1P "나" panel: the mirrored camera (a figure in demo) with every limb in its match colour,
+   and the live sync meter underneath. The right side of the stage is free in 1P: NOVA stands
+   in the centre and the player's avatar to her screen-left. Hidden in 2P (live cards instead). */
 .tile {
   position: absolute;
   right: calc(var(--u) * 2.6);
   top: calc(var(--u) * 2.2);
-  width: calc(var(--u) * 15.6);
-  height: calc(var(--u) * 11.7);
+  width: calc(var(--u) * 22);
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--u) * 0.7);
+}
+
+.sf[data-players="2"] .tile { display: none; }
+
+.tile__view {
+  position: relative;
+  width: 100%;
+  height: calc(var(--u) * 16.5);
   border-radius: calc(var(--u) * 0.4) calc(var(--u) * 1.6) calc(var(--u) * 0.4) calc(var(--u) * 1.6);
   background: var(--ink-2);
   box-shadow:
@@ -1258,19 +1702,47 @@ body {
 
 .tile__tag {
   position: absolute;
-  left: calc(var(--u) * 0.7);
-  bottom: calc(var(--u) * 0.6);
-  padding: calc(var(--u) * 0.26) calc(var(--u) * 0.6);
-  border-radius: calc(var(--u) * 0.25);
-  background: rgba(11, 6, 32, 0.72);
-  font: 600 calc(var(--u) * 0.62) / 1 var(--font-display);
-  letter-spacing: 0.18em;
+  left: calc(var(--u) * 0.8);
+  top: calc(var(--u) * 0.75);
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--u) * 0.5);
+  padding: calc(var(--u) * 0.32) calc(var(--u) * 0.7);
+  border-radius: calc(var(--u) * 0.3);
+  background: rgba(11, 6, 32, 0.74);
   color: var(--teal);
 }
 
-.tile.is-demo .tile__tag { color: var(--gold); }
+.tile__tag b {
+  font-size: calc(var(--u) * 1.05);
+  font-weight: 900;
+  line-height: 1;
+}
 
-.tile::after {
+.tile__live {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--u) * 0.3);
+  font: 600 calc(var(--u) * 0.56) / 1 var(--font-display);
+  font-style: normal;
+  letter-spacing: 0.16em;
+  color: #ffffff;
+}
+
+.tile__live::before {
+  content: "";
+  width: calc(var(--u) * 0.46);
+  height: calc(var(--u) * 0.46);
+  border-radius: 50%;
+  background: var(--coral);
+  animation: sf-breathe 1.4s ease-in-out infinite;
+}
+
+.tile.is-demo .tile__tag { color: var(--gold); }
+.tile.is-demo .tile__tag b { font: 600 calc(var(--u) * 0.66) / 1 var(--font-display); letter-spacing: 0.18em; }
+.tile.is-demo .tile__live { display: none; }
+
+.tile__view::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -1281,18 +1753,18 @@ body {
   pointer-events: none;
 }
 
-.tile.is-warn::after { opacity: 1; animation: sf-breathe 0.9s ease-in-out infinite; }
+.tile.is-warn .tile__view::after { opacity: 1; animation: sf-breathe 0.9s ease-in-out infinite; }
 
 .tile__warn {
   position: absolute;
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%) scale(0.9);
-  padding: calc(var(--u) * 0.5) calc(var(--u) * 0.9);
+  padding: calc(var(--u) * 0.55) calc(var(--u) * 1);
   border-radius: calc(var(--u) * 0.4);
   background: var(--coral);
   color: #ffffff;
-  font-size: calc(var(--u) * 0.95);
+  font-size: calc(var(--u) * 1.05);
   font-weight: 900;
   white-space: nowrap;
   opacity: 0;
@@ -1304,108 +1776,400 @@ body {
   transform: translate(-50%, -50%) scale(1);
 }
 
-/* rating burst: left of the dancer, clear of her whole body (T-pose arms span 39%-61% of the
-   width at 16:9); on narrow windows it moves up under the song bar instead */
-.rating {
-  position: absolute;
-  left: 21%;
-  top: 50%;
+.tile__sync {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  transform: translate(-50%, -50%);
+  gap: calc(var(--u) * 0.9);
+  height: calc(var(--u) * 2.7);
+  padding: 0 calc(var(--u) * 0.9) 0 calc(var(--u) * 1.1);
+  border-radius: calc(var(--u) * 0.35) calc(var(--u) * 1.2) calc(var(--u) * 0.35) calc(var(--u) * 0.35);
+  background: rgba(21, 12, 58, 0.84);
+  box-shadow: inset 0 0 0 1px rgba(190, 176, 255, 0.3), inset calc(var(--u) * 0.24) 0 0 var(--teal);
+}
+
+.tile__synclabel {
+  flex: 0 0 auto;
+  font-size: calc(var(--u) * 1.05);
+  font-weight: 900;
+  line-height: 1;
+  color: #ffffff;
+  white-space: nowrap;
+}
+
+/* the canvas is absolutely placed in its box so its backing-store size never feeds back into layout */
+.tile__meterbox {
+  position: relative;
+  flex: 1 1 auto;
+  align-self: stretch;
+  min-width: 0;
+}
+
+.tile__meter {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* what the limb colours mean (".sf ul" resets padding, hence the two-class selector) */
+.tile .legend {
+  display: flex;
+  justify-content: flex-end;
+  gap: calc(var(--u) * 1.2);
+  padding-right: calc(var(--u) * 0.4);
+  font-size: calc(var(--u) * 0.82);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--muted);
+}
+
+.legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--u) * 0.4);
+  text-shadow: 0 0 calc(var(--u) * 0.5) rgba(11, 6, 32, 0.9);
+}
+
+.legend li::before {
+  content: "";
+  width: calc(var(--u) * 1);
+  height: calc(var(--u) * 0.36);
+  border-radius: calc(var(--u) * 0.2);
+  background: var(--c);
+}
+
+.legend__hit { --c: var(--teal); }
+.legend__near { --c: var(--gold); }
+.legend__off { --c: var(--coral); }
+
+/* ---- hit feedback: big, layered and fast, on the scoring player's own side ---- */
+
+/* colour wash on that player's edge of the screen */
+.edge {
+  --amt: 0.6;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: calc(var(--u) * 34);
   opacity: 0;
   pointer-events: none;
   will-change: transform, opacity;
 }
 
-.rating__word {
-  font: 900 calc(var(--u) * 3.6) / 1 var(--font-display);
-  letter-spacing: -0.02em;
-  color: var(--rc);
+.edge--0 { left: 0; transform-origin: left center; }
+.edge--1 { right: 0; transform-origin: right center; display: none; }
+.sf[data-players="2"] .edge--1 { display: block; }
+
+.edge > i {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(100% 62% at 0% 46%, var(--rc) 0%, transparent 72%);
+  opacity: var(--amt);
+}
+
+.edge--1 > i { background: radial-gradient(100% 62% at 100% 46%, var(--rc) 0%, transparent 72%); }
+
+.edge > i::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: calc(var(--u) * 0.5);
+  background: linear-gradient(180deg, transparent 4%, var(--rc) 30%, #ffffff 46%, var(--rc) 62%, transparent 96%);
+}
+
+.edge--1 > i::after { left: auto; right: 0; }
+
+.edge[data-rating="perfect"] { --amt: 0.85; }
+.edge[data-rating="super"] { --amt: 0.7; }
+.edge[data-rating="good"] { --amt: 0.5; }
+.edge[data-rating="ok"] { --amt: 0.26; }
+.edge[data-rating="miss"] { --amt: 0; }
+
+/* gold ("스타 무브") recolours the whole burst */
+.sf .rating.is-gold,
+.sf .edge.is-gold { --rc: #ffc24a; }
+.sf .edge.is-gold { --amt: 0.95; }
+
+/* rating burst: a fixed box on the scoring player's side, in the band between that player's
+   corner HUD and the head of their avatar. Numbers from js/stage.js at 16:9 (1u = 1% of the
+   width): NOVA's T-pose hands reach 39.6%-60.4%; the avatars stand at 24.6% / 75.4% with the
+   top of the head at about 22.6u, body 21.8-27.5u, spread hands 16-33u. The box spans 1-28u
+   (72-99u for P2), so the word never reaches NOVA, and it ends above the avatar's head, so
+   "my character" stays visible while the word is up (only a raised arm can pass behind it).
+   On screens wider than 16:9 the boxes follow the stage inward instead of drifting out to the
+   corners. The box is 27u wide and PERFECT is set at 4.4u: js/hud.js (fitRatingWord) relies
+   on both. */
+.rating {
+  position: absolute;
+  top: calc(var(--u) * 11.6); /* 1P: under the combo counter (ends 11.2u) */
+  width: calc(var(--u) * 27);
+  height: calc(var(--u) * 10);
+  pointer-events: none;
+}
+
+.rating--p0 { left: max(calc(var(--u) * 1), calc(50% - var(--u) * 49)); }
+.rating--p1 { right: max(calc(var(--u) * 1), calc(50% - var(--u) * 49)); display: none; }
+.sf[data-players="2"] .rating--p1 { display: block; }
+
+/* 2P: under the live card (ends 14.1u); slightly smaller type so the gold stack still fits */
+.sf[data-players="2"] .rating {
+  top: calc(var(--u) * 14.4);
+  height: calc(var(--u) * 8);
+}
+
+.rating__body {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transform-origin: 50% 55%;
+  will-change: transform, opacity;
+}
+
+.rating__wordwrap {
+  position: relative;
+  font: 900 calc(var(--u) * 4.4) / 1 var(--font-display);
+  letter-spacing: -0.035em;
   transform: skewX(-8deg);
-  text-shadow:
-    0 0 calc(var(--u) * 1.6) var(--rc),
-    0 calc(var(--u) * 0.16) 0 rgba(11, 6, 32, 0.85),
-    0 0 calc(var(--u) * 0.3) rgba(11, 6, 32, 0.9);
   white-space: nowrap;
+}
+
+.rating[data-rating="perfect"] .rating__wordwrap { font-size: calc(var(--u) * 4.4 * var(--rfit, 1)); }
+.rating[data-rating="super"] .rating__wordwrap { font-size: calc(var(--u) * 4.8); }
+.rating[data-rating="good"] .rating__wordwrap { font-size: calc(var(--u) * 4.2); }
+.rating[data-rating="ok"] .rating__wordwrap { font-size: calc(var(--u) * 3.4); }
+.rating[data-rating="miss"] .rating__wordwrap { font-size: calc(var(--u) * 2.3); letter-spacing: 0.04em; }
+
+.sf[data-players="2"] .rating[data-rating="perfect"] .rating__wordwrap { font-size: calc(var(--u) * 4 * var(--rfit, 1)); }
+.sf[data-players="2"] .rating[data-rating="super"] .rating__wordwrap { font-size: calc(var(--u) * 4.3); }
+.sf[data-players="2"] .rating[data-rating="good"] .rating__wordwrap { font-size: calc(var(--u) * 3.8); }
+.sf[data-players="2"] .rating[data-rating="ok"] .rating__wordwrap { font-size: calc(var(--u) * 3.1); }
+.sf[data-players="2"] .rating[data-rating="miss"] .rating__wordwrap { font-size: calc(var(--u) * 2.1); }
+
+.rating__word {
+  position: relative;
+  color: var(--rc);
+  -webkit-text-stroke: calc(var(--u) * 0.16) rgba(11, 6, 32, 0.9);
+  paint-order: stroke fill;
+  text-shadow:
+    0 0 calc(var(--u) * 1.8) var(--rc),
+    0 calc(var(--u) * 0.24) 0 rgba(11, 6, 32, 0.9);
 }
 
 .rating[data-rating="perfect"] .rating__word { color: #fff6d8; }
-.rating[data-rating="ok"] .rating__word,
-.rating[data-rating="good"] .rating__word { font-size: calc(var(--u) * 3.2); }
-.rating[data-rating="miss"] .rating__word { font-size: calc(var(--u) * 3); }
 
-@media (max-aspect-ratio: 3/2) {
-  .rating { left: 50%; top: 15%; }
-  .rating__word { font-size: calc(var(--u) * 3.2); }
+/* MISS: small, dull, no glow */
+.rating[data-rating="miss"] .rating__word {
+  color: #c58b96;
+  -webkit-text-stroke-width: calc(var(--u) * 0.1);
+  text-shadow: 0 calc(var(--u) * 0.14) 0 rgba(11, 6, 32, 0.9);
+}
+
+/* white ghost of the word that blows outward on impact */
+.rating__echo {
+  position: absolute;
+  inset: 0;
+  color: #ffffff;
+  opacity: 0;
+  will-change: transform, opacity;
 }
 
 .rating__sub {
-  display: flex;
-  align-items: baseline;
-  gap: calc(var(--u) * 0.8);
-  margin-top: calc(var(--u) * 0.5);
-  padding: calc(var(--u) * 0.3) calc(var(--u) * 1);
+  margin-top: calc(var(--u) * 0.6);
+  padding: calc(var(--u) * 0.36) calc(var(--u) * 1.1);
   border-radius: calc(var(--u) * 2);
-  background: rgba(11, 6, 32, 0.62);
-  font-size: calc(var(--u) * 1.15);
+  background: rgba(11, 6, 32, 0.72);
+  font-size: calc(var(--u) * 1.25);
   font-weight: 900;
+  line-height: 1.1;
+  color: #ffffff;
   white-space: nowrap;
 }
 
-.rating__sub b {
-  font: 800 calc(var(--u) * 1.15) / 1 var(--font-display);
-  color: var(--gold);
+.sf[data-players="2"] .rating__sub { font-size: calc(var(--u) * 1.15); }
+
+.sf .rating[data-rating="miss"] .rating__sub {
+  margin-top: calc(var(--u) * 0.3);
+  padding: calc(var(--u) * 0.26) calc(var(--u) * 0.8);
+  font-size: calc(var(--u) * 0.92);
+  font-weight: 700;
+  color: var(--muted);
 }
 
 .rating__gold {
   display: none;
   align-items: center;
-  gap: calc(var(--u) * 0.6);
-  margin-bottom: calc(var(--u) * 0.4);
-  font: 800 calc(var(--u) * 1) / 1 var(--font-display);
-  letter-spacing: 0.3em;
-  color: var(--gold);
-  text-shadow: 0 0 calc(var(--u) * 0.8) rgba(255, 194, 74, 0.9);
+  gap: calc(var(--u) * 0.55);
+  margin-bottom: calc(var(--u) * 0.5);
+  padding: calc(var(--u) * 0.34) calc(var(--u) * 1.1);
+  border-radius: calc(var(--u) * 2);
+  background: linear-gradient(100deg, #fff0bf 0%, #ffc24a 60%, #ff9a3a 100%);
+  box-shadow: 0 0 calc(var(--u) * 1.4) rgba(255, 194, 74, 0.8);
+  color: var(--ink);
+  font-size: calc(var(--u) * 1.05);
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  transform: skewX(-8deg);
 }
 
 .rating__gold svg {
-  width: calc(var(--u) * 1.1);
-  height: calc(var(--u) * 1.1);
-  color: var(--gold-hot);
+  width: calc(var(--u) * 0.95);
+  height: calc(var(--u) * 0.95);
+  color: #8a4a00;
 }
 
 .rating.is-gold .rating__gold { display: flex; }
+
 .rating.is-gold .rating__word {
   color: #fff3c4;
+  -webkit-text-stroke-color: rgba(60, 26, 0, 0.92);
   text-shadow:
-    0 0 calc(var(--u) * 2) #ffc24a,
-    0 0 calc(var(--u) * 0.6) #ffb020,
-    0 calc(var(--u) * 0.16) 0 rgba(60, 26, 0, 0.9);
+    0 0 calc(var(--u) * 2.2) #ffc24a,
+    0 0 calc(var(--u) * 0.7) #ffb020,
+    0 calc(var(--u) * 0.24) 0 rgba(60, 26, 0, 0.92);
 }
 
-.rating__rays {
+/* soft flash, shock rings, streaks and (gold only) sparks, all centred on the box */
+.rating__flash {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: calc(var(--u) * 22);
+  height: calc(var(--u) * 22);
+  margin: calc(var(--u) * -11) 0 0 calc(var(--u) * -11);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.95) 0%, var(--rc) 24%, transparent 64%);
+  opacity: 0;
+  will-change: transform, opacity;
+}
+
+.rating__ring {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: calc(var(--u) * 15);
+  height: calc(var(--u) * 15);
+  margin: calc(var(--u) * -7.5) 0 0 calc(var(--u) * -7.5);
+  border-radius: 50%;
+  border: calc(var(--u) * 0.45) solid var(--rc);
+  box-shadow: 0 0 calc(var(--u) * 1.6) var(--rc), inset 0 0 calc(var(--u) * 1.6) var(--rc);
+  opacity: 0;
+  will-change: transform, opacity;
+}
+
+.rating__ring--b {
+  border-width: calc(var(--u) * 0.2);
+  border-color: #ffffff;
+}
+
+.rating__rays,
+.rating__sparks {
   position: absolute;
   left: 50%;
   top: 50%;
   width: 0;
   height: 0;
   opacity: 0;
+  will-change: transform, opacity;
 }
 
 .rating__rays i {
   position: absolute;
-  left: calc(var(--u) * -0.16);
-  top: calc(var(--u) * -2);
-  width: calc(var(--u) * 0.32);
-  height: calc(var(--u) * 4);
+  left: calc(var(--u) * -0.2);
+  top: calc(var(--u) * -2.6 * var(--l, 1));
+  width: calc(var(--u) * 0.4);
+  height: calc(var(--u) * 5.2 * var(--l, 1));
   border-radius: calc(var(--u) * 0.3);
-  background: linear-gradient(0deg, rgba(255, 255, 255, 0), var(--rc));
-  transform: rotate(var(--a)) translateY(calc(var(--u) * -9.5));
+  background: linear-gradient(0deg, rgba(255, 255, 255, 0) 0%, var(--rc) 60%, #ffffff 100%);
+  transform: rotate(var(--a)) translateY(calc(var(--u) * -9.2));
 }
 
-.rating.is-gold .rating__rays i { background: linear-gradient(0deg, rgba(255, 194, 74, 0), #fff3c4); }
+.rating__sparks i {
+  position: absolute;
+  left: calc(var(--u) * -0.8);
+  top: calc(var(--u) * -0.8);
+  width: calc(var(--u) * 1.6);
+  height: calc(var(--u) * 1.6);
+  color: var(--gold-hot);
+  filter: drop-shadow(0 0 calc(var(--u) * 0.4) #ffc24a);
+  transform: rotate(var(--a)) translateY(calc(var(--u) * -1 * var(--r, 9))) scale(var(--s, 1));
+}
+
+.rating__sparks svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* combo milestone banner (showCombo): slides in from the player's edge, beside the legs of
+   their avatar (two lines, about 12u wide: it ends before the avatar's spread hand at 16u) */
+.cbanner {
+  position: absolute;
+  top: calc(var(--u) * 32.5);
+  pointer-events: none;
+}
+
+.cbanner--p0 { left: max(calc(var(--u) * 2.6), calc(50% - var(--u) * 47.4)); }
+.cbanner--p1 { right: max(calc(var(--u) * 2.6), calc(50% - var(--u) * 47.4)); display: none; }
+.sf[data-players="2"] .cbanner--p1 { display: block; }
+.sf[data-players="2"] .cbanner { top: calc(var(--u) * 35); }
+
+.cbanner__plate {
+  display: grid;
+  grid-template-columns: auto auto;
+  justify-content: start;
+  align-items: baseline;
+  column-gap: calc(var(--u) * 0.5);
+  row-gap: calc(var(--u) * 0.45);
+  width: max-content;
+  padding: calc(var(--u) * 0.6) calc(var(--u) * 1.6) calc(var(--u) * 0.6) calc(var(--u) * 1.3);
+  border-radius: calc(var(--u) * 0.4) calc(var(--u) * 1.8) calc(var(--u) * 0.4) calc(var(--u) * 0.4);
+  background: linear-gradient(100deg, #fff0bf 0%, #ffc24a 55%, #ff8a4a 100%);
+  box-shadow: 0 0 calc(var(--u) * 2.2) rgba(255, 170, 60, 0.55), inset 0 0 0 calc(var(--u) * 0.1) rgba(255, 255, 255, 0.6);
+  color: var(--ink);
+  opacity: 0;
+  will-change: transform, opacity;
+}
+
+.cbanner--p1 .cbanner__plate {
+  border-radius: calc(var(--u) * 1.8) calc(var(--u) * 0.4) calc(var(--u) * 0.4) calc(var(--u) * 0.4);
+}
+
+.cbanner__plate b {
+  font: 900 calc(var(--u) * 2.5) / 1 var(--font-display);
+  letter-spacing: -0.03em;
+}
+
+.cbanner__plate span {
+  font-size: calc(var(--u) * 1.5);
+  font-weight: 900;
+  line-height: 1;
+}
+
+.cbanner__plate em {
+  grid-column: 1 / -1;
+  justify-self: start;
+  padding: calc(var(--u) * 0.36) calc(var(--u) * 0.7);
+  border-radius: calc(var(--u) * 0.3);
+  background: rgba(11, 6, 32, 0.88);
+  color: var(--gold-hot);
+  font-size: calc(var(--u) * 0.9);
+  font-weight: 700;
+  font-style: normal;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.cbanner.is-hot .cbanner__plate {
+  background: linear-gradient(100deg, #ffffff 0%, #ffe08a 38%, #ff8a4a 72%, #ff5a6e 100%);
+  box-shadow: 0 0 calc(var(--u) * 2.6) rgba(255, 90, 110, 0.6), inset 0 0 0 calc(var(--u) * 0.1) rgba(255, 255, 255, 0.7);
+}
 
 /* pictogram lane */
 .lane {
@@ -1614,6 +2378,8 @@ body {
 .sf[data-screen="results"] .results > *:nth-child(4) { animation-delay: 210ms; }
 .sf[data-screen="results"] .results > *:nth-child(5) { animation-delay: 280ms; }
 .sf[data-screen="results"] .results > *:nth-child(6) { animation-delay: 350ms; }
+.sf[data-screen="results"] .results > *:nth-child(7) { animation-delay: 420ms; }
+.sf[data-screen="results"] .results > *:nth-child(8) { animation-delay: 490ms; }
 
 .results__title {
   font-size: calc(var(--u) * 3.2);
@@ -1816,6 +2582,176 @@ body {
   margin-top: calc(var(--u) * 1.4);
 }
 
+/* ---- two-player results: one column each, the winner lifted and lit ---- */
+
+.results .results__sub {
+  display: none;
+  margin-top: calc(var(--u) * -0.5);
+  font-size: calc(var(--u) * 1.15);
+  font-weight: 700;
+  color: var(--muted);
+  word-break: keep-all;
+}
+
+.duo { display: none; }
+
+.screen--results[data-mode="duo"] .results > .stars,
+.screen--results[data-mode="duo"] .results > .results__score,
+.screen--results[data-mode="duo"] .results > .results__grid { display: none; }
+
+.screen--results[data-mode="duo"] .results__sub { display: block; }
+
+.screen--results[data-mode="duo"] .duo {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: stretch;
+  gap: calc(var(--u) * 1.1);
+  width: calc(var(--u) * 56);
+  max-width: 100%;
+  margin-top: calc(var(--u) * 1.2);
+}
+
+.screen--results[data-winner="0"] .results__title { color: var(--teal); text-shadow: 0 0 calc(var(--u) * 1.6) rgba(25, 227, 210, 0.6); }
+.screen--results[data-winner="1"] .results__title { color: #ff8795; text-shadow: 0 0 calc(var(--u) * 1.6) rgba(255, 90, 110, 0.7); }
+
+@media (min-aspect-ratio: 3/2) {
+  .screen--results[data-mode="duo"] .results { width: calc(var(--u) * 53); }
+  .screen--results[data-mode="duo"] .duo { width: 100%; }
+}
+
+.duo__vs {
+  align-self: center;
+  font: 900 calc(var(--u) * 1.3) / 1 var(--font-display);
+  letter-spacing: 0.06em;
+  color: rgba(246, 241, 255, 0.55);
+}
+
+.duo__col {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--u) * 0.9);
+  min-width: 0;
+  padding: calc(var(--u) * 1.4) calc(var(--u) * 1.6) calc(var(--u) * 1.5);
+  background: linear-gradient(160deg, rgba(44, 28, 104, 0.72), rgba(21, 12, 58, 0.72));
+  box-shadow: inset 0 0 0 1px rgba(190, 176, 255, 0.26), inset 0 calc(var(--u) * 0.28) 0 var(--pc);
+  transition: opacity 0.4s ease, transform 0.5s var(--ease-out);
+}
+
+/* the two columns mirror each other, like every other P1 / P2 pair */
+.duo__col--p0 { border-radius: calc(var(--u) * 0.5) calc(var(--u) * 2) calc(var(--u) * 0.5) calc(var(--u) * 2); }
+.duo__col--p1 { border-radius: calc(var(--u) * 2) calc(var(--u) * 0.5) calc(var(--u) * 2) calc(var(--u) * 0.5); }
+
+.duo__col.is-win {
+  transform: translateY(calc(var(--u) * -0.7)) scale(1.03);
+  box-shadow:
+    inset 0 0 0 calc(var(--u) * 0.16) var(--pc),
+    inset 0 calc(var(--u) * 0.28) 0 var(--pc),
+    0 0 calc(var(--u) * 3) var(--pc-glow);
+}
+
+.duo__col.is-lose { opacity: 0.7; }
+
+.duo__head {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--u) * 0.7);
+  min-height: calc(var(--u) * 1.9);
+}
+
+.duo__crown {
+  display: none;
+  width: calc(var(--u) * 1.8);
+  height: calc(var(--u) * 1.8);
+  color: var(--gold);
+  filter: drop-shadow(0 0 calc(var(--u) * 0.5) rgba(255, 194, 74, 0.9));
+}
+
+.duo__crown svg {
+  width: 100%;
+  height: 100%;
+}
+
+.duo__col.is-win .duo__crown { display: block; }
+
+.duo__verdict {
+  font-size: calc(var(--u) * 1.5);
+  font-weight: 900;
+  line-height: 1;
+  color: var(--gold-hot);
+  text-shadow: 0 0 calc(var(--u) * 0.8) rgba(255, 194, 74, 0.7);
+}
+
+.duo__col.is-draw .duo__verdict {
+  color: #ffffff;
+  text-shadow: none;
+}
+
+.duo__head .results__new { margin-left: auto; }
+
+.duo__score {
+  font: 900 calc(var(--u) * 3.3) / 1 var(--font-display);
+  letter-spacing: -0.02em;
+  color: #ffffff;
+  text-shadow: 0 0 calc(var(--u) * 1.2) var(--pc-glow), 0 calc(var(--u) * 0.16) 0 rgba(11, 6, 32, 0.7);
+  font-variant-numeric: tabular-nums;
+}
+
+.duo__col.is-win .duo__score {
+  color: #fff3c4;
+  text-shadow: 0 0 calc(var(--u) * 1.4) rgba(255, 194, 74, 0.7), 0 calc(var(--u) * 0.18) 0 rgba(120, 60, 0, 0.75);
+}
+
+.duo__stars {
+  display: flex;
+  gap: calc(var(--u) * 0.4);
+  height: calc(var(--u) * 2.6);
+}
+
+.duo__stars .star,
+.duo__stars .star:nth-child(n) {
+  width: calc(var(--u) * 2.6);
+  height: calc(var(--u) * 2.6);
+  transform: none;
+}
+
+.duo__rows {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--u) * 0.5);
+}
+
+.duo .brow {
+  grid-template-columns: calc(var(--u) * 5.9) 1fr calc(var(--u) * 2.2);
+  gap: calc(var(--u) * 0.7);
+}
+
+.duo .brow__name { font-size: calc(var(--u) * 0.7); }
+.duo .brow__track { height: calc(var(--u) * 0.66); }
+.duo .brow__count { font-size: calc(var(--u) * 0.98); }
+
+.duo__stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: calc(var(--u) * 1);
+  padding-top: calc(var(--u) * 0.9);
+  border-top: 1px solid rgba(190, 176, 255, 0.22);
+}
+
+.duo__stats span {
+  display: block;
+  font-size: calc(var(--u) * 0.8);
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.duo__stats b {
+  display: block;
+  margin-top: calc(var(--u) * 0.3);
+  font: 900 calc(var(--u) * 1.7) / 1 var(--font-display);
+  color: #ffffff;
+}
+
 /* ------------------------------------------------------------------ accessibility */
 
 @media (prefers-reduced-motion: reduce) {
@@ -1824,6 +2760,7 @@ body {
   .sky__stars--b,
   .sky__disc,
   .logo__comet svg,
+  .tile__live::before,
   .boot__msg {
     animation: none;
   }

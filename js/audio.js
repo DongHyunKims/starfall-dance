@@ -1336,50 +1336,114 @@ function sfxTone(c, out, t, { f, f2, type = 'sine', vel = 0.2, a = 0.004, tc = 0
   o.stop(t + a + tc * 7);
 }
 
-function sfxNoise(c, out, buf, t, { vel = 0.08, hp = 6000, tc = 0.2 }) {
+/**
+ * Filtered noise burst. `hp` is the filter frequency (a high-pass cutoff by default; pass
+ * `type` for 'lowpass' / 'bandpass'), `f2` sweeps it over `glide` seconds, `a` is a fade-in.
+ */
+function sfxNoise(c, out, buf, t, { vel = 0.08, hp = 6000, tc = 0.2, type = 'highpass', q, a = 0, f2, glide = 0.1 }) {
   const s = c.createBufferSource();
   s.buffer = buf;
+  s.loop = true;
   const f = c.createBiquadFilter();
-  f.type = 'highpass';
-  f.frequency.value = hp;
+  f.type = type;
+  f.frequency.setValueAtTime(hp, t);
+  if (f2) f.frequency.exponentialRampToValueAtTime(f2, t + glide);
+  if (q) f.Q.value = q;
   const g = c.createGain();
-  g.gain.setValueAtTime(vel, t);
-  g.gain.setTargetAtTime(0, t + 0.005, tc);
+  if (a > 0) {
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(vel, t + a);
+  } else g.gain.setValueAtTime(vel, t);
+  g.gain.setTargetAtTime(0, t + a + 0.005, tc);
   s.connect(f);
   f.connect(g);
   g.connect(out);
   s.start(t, Math.random() * 0.5);
-  s.stop(t + tc * 7 + 0.01);
+  s.stop(t + a + tc * 7 + 0.01);
 }
 
 // All SFX are pitched in F minor so they sit inside the track.
+const SFX_HZ = {
+  F5: 698.46, Ab5: 830.61, C6: 1046.5, Eb6: 1244.51, F6: 1396.91, G6: 1567.98, Ab6: 1661.22,
+  C7: 2093.0, Eb7: 2489.02, F7: 2793.83, C8: 4186.01,
+};
+
+// The rating sounds climb a ladder: every step up starts higher, adds a layer (a body thump,
+// more notes, shimmer, air) and rings longer, so the rating can be heard without looking.
+// MISS is the only one that falls, and the only one with no brightness at all.
 const SFX = {
+  // OK: one small soft blip. Acknowledged, nothing more.
+  ok(c, out, t, nb) {
+    sfxTone(c, out, t, { f: SFX_HZ.F5, vel: 0.16, tc: 0.05 });
+    sfxNoise(c, out, nb, t, { vel: 0.03, hp: 5000, tc: 0.012 });
+  },
+  // GOOD: a rising two-note chirp with a light thump under it.
+  good(c, out, t, nb) {
+    sfxTone(c, out, t, { f: 220, f2: 110, glide: 0.05, vel: 0.16, tc: 0.04, a: 0.002 });
+    sfxTone(c, out, t, { f: SFX_HZ.Ab5, type: 'triangle', vel: 0.16, tc: 0.055 });
+    sfxTone(c, out, t + 0.06, { f: SFX_HZ.C6, vel: 0.15, tc: 0.09 });
+    sfxNoise(c, out, nb, t, { vel: 0.04, hp: 6000, tc: 0.018 });
+  },
+  // SUPER: a bright three-note run up, a snap on the attack and a touch of shimmer.
+  super(c, out, t, nb) {
+    sfxTone(c, out, t, { f: 240, f2: 95, glide: 0.06, vel: 0.22, tc: 0.05, a: 0.002 });
+    sfxTone(c, out, t, { f: SFX_HZ.C6, type: 'triangle', vel: 0.16, tc: 0.07 });
+    sfxTone(c, out, t + 0.05, { f: SFX_HZ.F6, vel: 0.15, tc: 0.09 });
+    sfxTone(c, out, t + 0.1, { f: SFX_HZ.Ab6, vel: 0.14, tc: 0.14 });
+    sfxTone(c, out, t + 0.1, { f: SFX_HZ.C7 * 1.004, type: 'triangle', vel: 0.04, tc: 0.18 });
+    sfxNoise(c, out, nb, t, { vel: 0.07, hp: 7000, tc: 0.03 });
+  },
+  // PERFECT: a punch, then a sparkling arpeggio up to the high octave that rings out, with air.
   perfect(c, out, t, nb) {
-    sfxTone(c, out, t, { f: 1396.9, vel: 0.2, tc: 0.09 });
-    sfxTone(c, out, t + 0.055, { f: 2093.0, vel: 0.18, tc: 0.12 });
-    sfxTone(c, out, t + 0.11, { f: 2793.8, type: 'triangle', vel: 0.07, tc: 0.15 });
-    sfxNoise(c, out, nb, t, { vel: 0.03, hp: 8000, tc: 0.06 });
+    sfxTone(c, out, t, { f: 260, f2: 70, glide: 0.07, vel: 0.2, tc: 0.06, a: 0.002 });
+    sfxTone(c, out, t, { f: SFX_HZ.F5, type: 'triangle', vel: 0.1, tc: 0.12 });
+    sfxTone(c, out, t, { f: SFX_HZ.F6, vel: 0.15, tc: 0.08 });
+    sfxTone(c, out, t + 0.045, { f: SFX_HZ.Ab6, vel: 0.15, tc: 0.09 });
+    sfxTone(c, out, t + 0.09, { f: SFX_HZ.C7, vel: 0.15, tc: 0.11 });
+    sfxTone(c, out, t + 0.135, { f: SFX_HZ.F7, vel: 0.14, tc: 0.22 });
+    sfxTone(c, out, t + 0.135, { f: SFX_HZ.F7 * 1.006, type: 'triangle', vel: 0.05, tc: 0.26 });
+    sfxNoise(c, out, nb, t, { vel: 0.06, hp: 8000, tc: 0.04 });
+    sfxNoise(c, out, nb, t + 0.09, { vel: 0.05, hp: 9000, tc: 0.12, a: 0.05 });
   },
-  super(c, out, t) {
-    sfxTone(c, out, t, { f: 1046.5, vel: 0.19, tc: 0.08 });
-    sfxTone(c, out, t + 0.05, { f: 1396.9, vel: 0.16, tc: 0.1 });
+  // MISS: a soft, dull thud that sags. No brightness, no bite.
+  miss(c, out, t, nb) {
+    sfxTone(c, out, t, { f: 150, f2: 62, glide: 0.14, vel: 0.19, tc: 0.07, a: 0.008 });
+    sfxTone(c, out, t, { f: 196, f2: 147, glide: 0.16, type: 'triangle', vel: 0.08, tc: 0.08, a: 0.01, lp: 700 });
+    sfxNoise(c, out, nb, t, { vel: 0.45, hp: 380, tc: 0.045, type: 'lowpass', a: 0.004 });
   },
-  good(c, out, t) {
-    sfxTone(c, out, t, { f: 830.6, type: 'triangle', vel: 0.17, tc: 0.07 });
-  },
-  ok(c, out, t) {
-    sfxTone(c, out, t, { f: 698.5, vel: 0.13, tc: 0.05 });
-  },
-  miss(c, out, t) {
-    sfxTone(c, out, t, { f: 165, f2: 70, glide: 0.18, type: 'sawtooth', vel: 0.24, tc: 0.07, a: 0.006, lp: 700 });
-  },
+  // GOLD (star move): an impact, a chord stab, a run up two octaves and a long glittering tail.
   gold(c, out, t, nb) {
-    const notes = [698.5, 830.6, 1046.5, 1396.9, 1661.2, 2093.0];
-    notes.forEach((f, i) => {
-      sfxTone(c, out, t + i * 0.045, { f, vel: 0.14, tc: 0.16 });
-      sfxTone(c, out, t + i * 0.045, { f: f * 2, type: 'triangle', vel: 0.04, tc: 0.12 });
+    sfxTone(c, out, t, { f: 180, f2: 45, glide: 0.12, vel: 0.32, tc: 0.11, a: 0.002 });
+    sfxNoise(c, out, nb, t, { vel: 0.1, hp: 5000, tc: 0.28 });
+    for (const f of [SFX_HZ.F5, SFX_HZ.Ab5, SFX_HZ.C6, SFX_HZ.G6]) {
+      sfxTone(c, out, t, { f, type: 'sawtooth', vel: 0.055, tc: 0.2, a: 0.003, lp: 3200 });
+    }
+    const run = [SFX_HZ.F5, SFX_HZ.Ab5, SFX_HZ.C6, SFX_HZ.Eb6, SFX_HZ.F6, SFX_HZ.Ab6, SFX_HZ.C7, SFX_HZ.F7];
+    run.forEach((f, i) => {
+      const at = t + 0.03 + i * 0.05;
+      sfxTone(c, out, at, { f, vel: 0.12, tc: 0.13 });
+      sfxTone(c, out, at, { f: f * 2, type: 'triangle', vel: 0.03, tc: 0.1 });
     });
-    sfxNoise(c, out, nb, t, { vel: 0.05, hp: 7000, tc: 0.22 });
+    const top = t + 0.03 + run.length * 0.05;
+    sfxTone(c, out, top, { f: SFX_HZ.F7, vel: 0.11, tc: 0.45 });
+    sfxTone(c, out, top, { f: SFX_HZ.F7 * 1.005, type: 'triangle', vel: 0.05, tc: 0.5 });
+    sfxTone(c, out, top, { f: SFX_HZ.C8, vel: 0.04, tc: 0.4 });
+    sfxNoise(c, out, nb, t + 0.2, { vel: 0.06, hp: 9000, tc: 0.3, a: 0.2 });
+  },
+  // COMBO milestone: a whoosh and a glide up into a two-hit "ta-da" with claps. Not a rating.
+  combo(c, out, t, nb) {
+    sfxNoise(c, out, nb, t, { vel: 0.3, hp: 1500, f2: 7000, glide: 0.15, tc: 0.05, type: 'bandpass', q: 1.2, a: 0.1 });
+    sfxTone(c, out, t, { f: SFX_HZ.C6 / 2, f2: SFX_HZ.C7, glide: 0.15, type: 'triangle', vel: 0.11, tc: 0.06, a: 0.02 });
+    const hit1 = t + 0.16;
+    const hit2 = t + 0.29;
+    sfxNoise(c, out, nb, hit1, { vel: 0.45, hp: 1800, tc: 0.03, type: 'bandpass', q: 0.8 });
+    sfxTone(c, out, hit1, { f: SFX_HZ.F6, type: 'triangle', vel: 0.08, tc: 0.12 });
+    sfxTone(c, out, hit1, { f: SFX_HZ.C7, vel: 0.1, tc: 0.14 });
+    sfxTone(c, out, hit1, { f: SFX_HZ.Eb7, vel: 0.07, tc: 0.14 });
+    sfxNoise(c, out, nb, hit2, { vel: 0.45, hp: 2000, tc: 0.035, type: 'bandpass', q: 0.8 });
+    sfxTone(c, out, hit2, { f: SFX_HZ.Ab6, type: 'triangle', vel: 0.07, tc: 0.2 });
+    sfxTone(c, out, hit2, { f: SFX_HZ.F7, vel: 0.12, tc: 0.34 });
+    sfxTone(c, out, hit2, { f: SFX_HZ.C8, vel: 0.035, tc: 0.3 });
   },
   ui(c, out, t) {
     sfxTone(c, out, t, { f: 1568, f2: 2093, glide: 0.03, type: 'triangle', vel: 0.11, tc: 0.022, a: 0.002 });
@@ -1394,6 +1458,69 @@ const SFX = {
   },
 };
 
+/**
+ * SFX gain staging. Two players can be judged on the same frame, so one-shots stack:
+ *  - voices that start within `stackWindow` s of each other are staged: every later one is
+ *    `stackGain` quieter and flammed `flam` s behind, so their attacks never add up;
+ *  - the whole SFX bus then runs through a zero-latency soft limiter that is transparent
+ *    below `knee` and can never exceed `ceiling`, whatever is stacked on it.
+ * ceiling x MIX.sfxGain (0.51) on top of the mastered music (peak ~0.8) stays inside the
+ * range of the master soft clipper, so SFX can never hard-clip the output.
+ */
+const SFX_BUS = { knee: 0.5, ceiling: 0.85, range: 4, stackWindow: 0.09, stackGain: 0.72, flam: 0.03, maxStack: 5, pan: 0.35 };
+
+function createSfxBus(c, out) {
+  const input = c.createGain();
+  input.gain.value = 1 / SFX_BUS.range;
+  const shaper = c.createWaveShaper();
+  const n = 4097;
+  const curve = new Float32Array(n);
+  const span = SFX_BUS.ceiling - SFX_BUS.knee;
+  for (let i = 0; i < n; i++) {
+    const x = ((i / (n - 1)) * 2 - 1) * SFX_BUS.range;
+    const a = Math.abs(x);
+    const y = a <= SFX_BUS.knee ? a : SFX_BUS.knee + span * Math.tanh((a - SFX_BUS.knee) / span);
+    curve[i] = x < 0 ? -y : y;
+  }
+  shaper.curve = curve;
+  input.connect(shaper);
+  shaper.connect(out);
+  return input;
+}
+
+/**
+ * Starts one SFX voice on the bus (see SFX_BUS for the staging). `recent` is the caller's
+ * list of recent voice start times. opts.player (0 | 1) pans the voice toward that player's
+ * side of the screen; stacked voices without a player alternate sides.
+ */
+function startSfxVoice(c, bus, recent, name, opts, noiseBuf) {
+  if (!Object.prototype.hasOwnProperty.call(SFX, name)) return false;
+  const now = c.currentTime;
+  while (recent.length && now - recent[0] > SFX_BUS.stackWindow) recent.shift();
+  const stack = Math.min(recent.length, SFX_BUS.maxStack);
+  recent.push(now);
+  if (recent.length > 16) recent.shift(); // the clock stands still while the context is suspended: stay bounded
+  const player = opts && (opts.player === 0 || opts.player === 1) ? opts.player : -1;
+  let pan = 0;
+  if (player >= 0) pan = player === 0 ? -SFX_BUS.pan : SFX_BUS.pan;
+  else if (stack > 0) pan = stack % 2 ? SFX_BUS.pan : -SFX_BUS.pan;
+  const voice = c.createGain();
+  let gain = Math.pow(SFX_BUS.stackGain, stack);
+  if (pan !== 0 && typeof c.createStereoPanner === 'function') {
+    const panner = c.createStereoPanner();
+    panner.pan.value = pan;
+    gain /= Math.sin(((Math.abs(pan) + 1) * Math.PI) / 4); // equal-power pan: keep the near side at unity
+    voice.connect(panner);
+    panner.connect(bus);
+  } else voice.connect(bus);
+  voice.gain.value = gain;
+  SFX[name](c, voice, now + 0.005 + stack * SFX_BUS.flam, noiseBuf);
+  return true;
+}
+
+/** For tests and tools: the SFX voices and their bus, usable with any (mock) AudioContext. */
+export const SFX_KIT = { SFX, SFX_BUS, createSfxBus, startSfxVoice };
+
 // ───────────────────────────────────────────────────────────── public API
 
 export function createMusic() {
@@ -1407,6 +1534,8 @@ export function createMusic() {
   let masterGain = null;
   let musicGain = null;
   let sfxGain = null;
+  let sfxBus = null; // soft-limited input of the SFX fader (see SFX_BUS)
+  const sfxRecent = []; // start times of the latest SFX voices, for stacking
   let analyser = null;
   let freq = null;
   let bands = null;
@@ -1484,6 +1613,7 @@ export function createMusic() {
     sfxGain = ctx.createGain();
     sfxGain.gain.value = MIX.sfxGain;
     sfxGain.connect(masterGain);
+    sfxBus = createSfxBus(ctx, sfxGain);
 
     analyser = ctx.createAnalyser();
     analyser.fftSize = LEVELS.fft;
@@ -1674,14 +1804,16 @@ export function createMusic() {
       return { bass: levels.bass, mid: levels.mid, high: levels.high, kick: levels.kick };
     },
 
-    /** 'perfect' | 'super' | 'good' | 'ok' | 'miss' | 'gold' | 'ui' | 'countdown' (+ 'go'). */
-    playSfx(name) {
-      if (!ctx || !sfxGain) return;
-      const fn = SFX[name];
-      if (!fn) return;
+    /**
+     * 'perfect' | 'super' | 'good' | 'ok' | 'miss' | 'gold' | 'combo' | 'ui' | 'countdown' (+ 'go').
+     * opts.player (0 | 1, optional) pans the sound toward that player's side. Any number of
+     * calls may land on the same frame (two players): they are staged and limited, never clipped.
+     */
+    playSfx(name, opts) {
+      if (!ctx || !sfxBus) return;
       unlock();
       try {
-        fn(ctx, sfxGain, ctx.currentTime + 0.005, sfxNoiseBuf);
+        startSfxVoice(ctx, sfxBus, sfxRecent, name, opts, sfxNoiseBuf);
       } catch (err) {
         console.warn('[audio] sfx failed', name, err);
       }
