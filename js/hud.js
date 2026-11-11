@@ -715,6 +715,20 @@ function sideMarkup(p) {
   </div>`;
 }
 
+// 2P: one player's own camera view (a crop of the shared picture that follows them), so each
+// player can check at a glance how the camera sees them. Sits at the screen edge on their side,
+// below the rating band and above the combo banner. Without a camera (a demo) the tile stays and
+// says so: it is where players look for themselves, and the place to learn that the figure
+// dancing for them is a simulated player.
+function pcamMarkup(p) {
+  return `<div class="pcam pcam--p${p} is-off" data-ref="pcam${p}">
+    <canvas class="pcam__canvas" data-ref="pcamCanvas${p}"></canvas>
+    <span class="pcam__tag"><b>P${p + 1}</b><i>LIVE</i></span>
+    <span class="pcam__lost">안 보여요</span>
+    <span class="pcam__off"><b>카메라 꺼짐</b><i>지금은 데모 플레이어예요</i><i>카메라를 켜면 여기에 내 모습이 나와요</i></span>
+  </div>`;
+}
+
 // one player's rating burst; lives on that player's side of the stage, in the band between
 // their corner HUD and the head of their avatar: never over NOVA, never over "my character"
 function ratingMarkup(p) {
@@ -886,6 +900,8 @@ const TEMPLATE = `
     </div>
     <ul class="legend" aria-hidden="true"><li class="legend__hit">맞음</li><li class="legend__near">거의</li><li class="legend__off">다름</li></ul>
   </div>
+  ${pcamMarkup(0)}
+  ${pcamMarkup(1)}
   ${ratingMarkup(0)}
   ${ratingMarkup(1)}
   ${bannerMarkup(0)}
@@ -987,7 +1003,8 @@ const FLY_ARRIVE_MS = 560;
  *   landmarksMirrored  true (default): landmark x is already mirrored, 0 = screen left, as js/pose-tracker.js
  *                      emits them / false: raw MediaPipe image coordinates
  *   readyThreshold     upperVisible (shoulders + elbows + wrists) needed on the camera screen (default 0.7)
- *   readyHoldMs        how long every expected player has to stay above it (default 1500)
+ *   readyHoldMs        how long every expected player has to stay above it (default 2600:
+ *                      long enough to see for yourself how the camera frames you)
  *   beatsAhead         how many beats of upcoming moves the lane shows (default 7)
  *   maxDpr             canvas pixel-ratio cap (default 2)
  *   keyboard           false disables the built-in Space/Enter/2/Esc handling
@@ -996,7 +1013,7 @@ export function createHud(root, options) {
   if (!root) throw new Error('createHud(root): root element is required');
 
   const cfg = Object.assign(
-    { players: 1, landmarksMirrored: true, readyThreshold: 0.7, readyHoldMs: 1500, beatsAhead: 7, maxDpr: 2, keyboard: true },
+    { players: 1, landmarksMirrored: true, readyThreshold: 0.7, readyHoldMs: 2600, beatsAhead: 7, maxDpr: 2, keyboard: true },
     options || {},
   );
 
@@ -1178,6 +1195,11 @@ export function createHud(root, options) {
       cardMeter: makeMeter(),
       cardLost: false,
       cardLowSince: 0,
+      // 2P camera tile
+      pcam: refs['pcam' + p],
+      pcamView: makeView(refs['pcamCanvas' + p]),
+      pcamCx: p === 0 ? 0.27 : 0.73, // where the crop is centred (mirrored x), eased toward the player
+      pcamShown: false,
       a: null,
     };
 
@@ -2446,6 +2468,57 @@ export function createHud(root, options) {
     if (lost !== ui.cardLost) {
       ui.cardLost = lost;
       ui.card.classList.toggle('is-lost', lost);
+      ui.pcam.classList.toggle('is-lost', lost);
+    }
+  }
+
+  // -- 2P camera tiles: each player's own crop of the shared camera picture ----------------------
+
+  function updatePcam(ui, video, res) {
+    const live = isLive(video);
+    if (live !== ui.pcamShown) {
+      ui.pcamShown = live;
+      ui.pcam.classList.toggle('is-off', !live); // no camera: the tile explains instead of showing
+    }
+    const v = ui.pcamView;
+    if (!live || !v.ok) return;
+    const ctx = v.ctx;
+    const W = v.W;
+    const H = v.H;
+    const srcW = video.videoWidth;
+    const srcH = video.videoHeight;
+    // a window as tall as the picture, with the tile's shape, that follows the player sideways
+    let cropH = srcH;
+    let cropW = cropH * (W / H);
+    if (cropW > srcW) { cropW = srcW; cropH = cropW * (H / W); }
+    let want = ui.index === 0 ? 0.27 : 0.73;
+    if (res && res.cx === res.cx && res.cx !== undefined) want = res.cx;
+    ui.pcamCx += (want - ui.pcamCx) * 0.1;
+    let left = ui.pcamCx * srcW - cropW * 0.5; // left edge in MIRRORED picture pixels
+    if (left < 0) left = 0;
+    if (left > srcW - cropW) left = srcW - cropW;
+    const cropY = (srcH - cropH) * 0.5;
+    const rawX = srcW - (left + cropW);        // the same window in the raw (un-mirrored) picture
+    VS[V_CROP_X] = cfg.landmarksMirrored ? left : rawX;
+    VS[V_CROP_Y] = cropY;
+    VS[V_CROP_W] = cropW;
+    VS[V_CROP_H] = cropH;
+    VS[V_SRC_W] = srcW;
+    VS[V_SRC_H] = srcH;
+
+    ctx.globalAlpha = 1;
+    ctx.setTransform(-1, 0, 0, 1, W, 0); // mirror, like looking into a mirror
+    ctx.drawImage(video, rawX, cropY, cropW, cropH, 0, 0, W, H);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = 'rgba(20,8,60,0.16)';
+    ctx.fillRect(0, 0, W, H);
+
+    const lms = res ? res.landmarks : null;
+    if (lms && lms.length >= 29) {
+      const s = ui.sync;
+      const synced = performance.now() - s.at < SYNC_STALE_MS;
+      projectLandmarks(v, lms);
+      paintSkeleton(v, false, synced ? s : null, upperOf(res) < UPPER_LOW ? C_CORAL : PLAYER_COLORS[ui.index]);
     }
   }
 
@@ -2469,6 +2542,8 @@ export function createHud(root, options) {
       if (playerCount === 2) {
         updateCard(PU[0], r0);
         updateCard(PU[1], r1);
+        updatePcam(PU[0], videoEl, r0);
+        updatePcam(PU[1], videoEl, r1);
       } else {
         updateTile(videoEl, r0);
       }
@@ -2631,6 +2706,8 @@ export function createHud(root, options) {
     layoutLane();
     layoutView(tileView);
     layoutView(camView);
+    layoutView(PU[0].pcamView);
+    layoutView(PU[1].pcamView);
     layoutMeters();
     fig.ok = sizeCanvas(fig.canvas);
     drawHowto();

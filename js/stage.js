@@ -41,7 +41,7 @@ const TUNING = {
   discPower: 2.4, // extra gain on the disc itself, so it stays hot while the haze stays low
   floorReflectivity: 0.6, // mirror strength of the stage disc
   beamPower: 0.2, // volumetric beam brightness
-  wavePower: 0.8, // rating shockwave brightness (thin rings on a billboard behind everybody)
+  wavePower: 0.55, // rating shockwave brightness (thin rings on a billboard behind everybody)
   resultsShift: 0.22, // results: the view is shifted so NOVA stands in the left third (fraction of width)
   menuShift: -0.19, // title: NOVA stands in the right third, clear of the logo and buttons
   cameraFov: 30, // vertical fov, all modes
@@ -50,19 +50,19 @@ const TUNING = {
   frameBottom: 0.66, // keeps her feet above the HUD pictogram lane
   frameSide: 0.66,
   frameSideAvatar: 0.94, // the player avatars' reach boxes may come this close to the left/right edge
-  playDollyBeat: 0.07, // metres of dolly-in on each kick
+  playDollyBeat: 0.04, // metres of dolly-in on each kick
   playSway: 0.1, // metres of lateral camera sway
   // hit feedback (v2). Everything below scales effects that live on the floor, at the sides,
   // behind NOVA or at an avatar's spot, so none of it can veil the coach.
-  fxPower: 1.0, // master brightness of rings, pads, columns and flashes
-  fxSparks: 1.0, // particle-count multiplier for fountains and bursts
-  columnPower: 0.85, // light column at the scoring avatar's spot
+  fxPower: 0.8, // master brightness of rings, pads, columns and flashes
+  fxSparks: 0.65, // particle-count multiplier for fountains and bursts
+  columnPower: 0.6, // light column at the scoring avatar's spot
   padPower: 1.0, // the avatars' floor pads
-  edgeGlow: 0.9, // frame-edge colour hit on the scoring player's side (final pass)
-  sideBeams: 2.4, // how hard the overhead beams on the scoring side slam onto that spot
-  pylonJump: 2.6, // metres the flank pylons jump at full strength
+  edgeGlow: 0.6, // frame-edge colour hit on the scoring player's side (final pass)
+  sideBeams: 1.5, // how hard the overhead beams on the scoring side slam onto that spot
+  pylonJump: 1.7, // metres the flank pylons jump at full strength
   punch: 0.3, // metres of camera punch-in at full strength (gold; PERFECT is 0.55 of it); capped at 0.3
-  missDip: 0.55, // desaturation of the missing player's side on MISS
+  missDip: 0.3, // desaturation of the missing player's side on MISS (a hint, not a blackout)
 };
 
 // ---------------------------------------------------------------------------------------
@@ -163,13 +163,13 @@ const LOOKS = {
   menu: makeLook(HEX.violet, HEX.teal, HEX.amber, 0.7, 0.7, 0.42, 0.45, 0.0, 0.8, 0.55),
   results: makeLook(HEX.amber, HEX.violet, HEX.teal, 1.1, 1.0, 0.5, 0.5, 0.0, 0.9, 0.9),
   intro: makeLook(HEX.violet, HEX.teal, HEX.deepViolet, 0.72, 0.8, 0.26, 0.5, 0.0, 0.45, 0.3),
-  verseA: makeLook(HEX.teal, HEX.violet, HEX.amber, 0.88, 0.68, 0.55, 1.0, 0.15, 0.65, 0.5),
-  build: makeLook(HEX.violet, HEX.amber, HEX.coral, 0.95, 0.8, 0.7, 1.4, 0.45, 0.8, 0.7),
+  verseA: makeLook(HEX.teal, HEX.violet, HEX.amber, 0.88, 0.68, 0.5, 0.8, 0.05, 0.6, 0.45),
+  build: makeLook(HEX.violet, HEX.amber, HEX.coral, 0.95, 0.8, 0.58, 1.0, 0.12, 0.7, 0.55),
   // choruses: violet space with amber/coral as accents (an amber-primary nebula washed the frame out)
-  chorus1: makeLook(HEX.violet, HEX.amber, HEX.coral, 0.9, 0.75, 1.0, 2.0, 1.0, 1.0, 1.0),
-  verseB: makeLook(HEX.teal, HEX.coral, HEX.violet, 0.9, 0.72, 0.6, 1.1, 0.2, 0.7, 0.55),
+  chorus1: makeLook(HEX.violet, HEX.amber, HEX.coral, 0.9, 0.75, 0.7, 1.2, 0.25, 0.8, 0.65),
+  verseB: makeLook(HEX.teal, HEX.coral, HEX.violet, 0.9, 0.72, 0.52, 0.85, 0.06, 0.62, 0.45),
   bridge: makeLook(HEX.deepViolet, HEX.teal, HEX.violet, 0.58, 0.85, 0.24, 0.4, 0.0, 0.55, 0.3),
-  chorus2: makeLook(HEX.violet, HEX.teal, HEX.amber, 1.0, 0.8, 1.0, 2.0, 1.0, 1.0, 1.0),
+  chorus2: makeLook(HEX.violet, HEX.teal, HEX.amber, 1.0, 0.8, 0.7, 1.2, 0.25, 0.8, 0.65),
   outro: makeLook(HEX.violet, HEX.amber, HEX.teal, 0.8, 0.9, 0.36, 0.6, 0.0, 0.6, 0.45),
 };
 const LOOK_SCALARS = ['star', 'nebula', 'beams', 'sweep', 'strobe', 'ribbons', 'embers'];
@@ -363,7 +363,7 @@ void main() {
   float h = d.y;
 
   // deep space gradient
-  vec3 col = mix(vec3(0.004, 0.003, 0.012), vec3(0.020, 0.011, 0.055), pow(1.0 - abs(h), 2.5));
+  vec3 col = mix(vec3(0.004, 0.003, 0.012), vec3(0.020, 0.011, 0.055), pow(max(1.0 - abs(h), 0.0), 2.5));
 
   // drifting nebula: two counter-rotating samples of the baked field morph against each other
   vec4 n1 = texture2D(tNebula, equirect(rotY(d, uTime * 0.0045)));
@@ -393,7 +393,7 @@ void main() {
   vec2 sxz = normalize(uStarDir.xz + vec2(0.0, -1e-5));
   float az = max(dot(dxz, sxz), 0.0);
   float hg = exp(-abs(h) * 7.0);
-  col += mix(uColA * 0.10, uStarEdge * 0.10, pow(az, 6.0)) * hg * (0.55 + 0.45 * uStarPower);
+  col += mix(uColA * 0.10, uStarEdge * 0.10, pow(max(az, 0.0), 6.0)) * hg * (0.55 + 0.45 * uStarPower);
 
   float power = uStarPower * (1.0 + 0.10 * uKick + uFlare);
 
@@ -417,7 +417,7 @@ void main() {
     float cells = vnoise2(lp * 26.0 + flow * 9.0);
     float ridged = 1.0 - abs(2.0 * fbm2(lp * 3.2 - flow * 2.0) - 1.0);
     ridged = pow(clamp(ridged, 0.0, 1.0), 5.0);
-    disc = mix(uStarEdge * 0.7, uStarCore * 1.9, pow(mu, 0.85)); // strong limb darkening: a ball of fire, not a flat plate
+    disc = mix(uStarEdge * 0.7, uStarCore * 1.9, pow(max(mu, 0.0), 0.85)); // strong limb darkening: a ball of fire, not a flat plate
     disc *= 0.62 + 0.55 * gran + 0.14 * cells;
     disc += uStarCore * (ridged * 0.55 * mu);
     float limb = (1.0 - rn) * 26.0;
@@ -457,7 +457,7 @@ void main() {
   float a1 = vnoise2(c * 4.0 + vec2(uTime * 0.035, 0.0));
   float a2 = vnoise2(c * 9.0 - vec2(0.0, uTime * 0.055));
   float a3 = vnoise2(c * 19.0 + vec2(uTime * 0.02, 7.0));
-  float shafts = pow(a1, 2.2) * 1.3 + pow(a2, 3.0) * 0.8 + pow(a3, 4.0) * 0.5;
+  float shafts = pow(max(a1, 0.0), 2.2) * 1.3 + pow(max(a2, 0.0), 3.0) * 0.8 + pow(max(a3, 0.0), 4.0) * 0.5;
   float o = max(r - 1.0, 0.0);
   float fall = smoothstep(0.9, 1.12, r) * exp(-o * 0.95);
   float edge = 1.0 - smoothstep(0.55, 1.0, r / uSpan);
@@ -533,7 +533,7 @@ void main() {
   float reflL = max(max(refl.r, refl.g), refl.b);
   refl *= mix(1.0, 0.45, stageMask * smoothstep(0.25, 1.1, reflL)); // no glaring star blob under the HUD lane
   float f0 = mix(0.10, 0.07, stageMask);
-  float fres = f0 + (1.0 - f0) * pow(1.0 - ndv, 5.0);
+  float fres = f0 + (1.0 - f0) * pow(clamp(1.0 - ndv, 0.0, 1.0), 5.0);
   fres = mix(fres, 1.0, 0.12 * stageMask);
 
   // --- LED pattern on the stage disc ---
@@ -544,7 +544,8 @@ void main() {
   spoke *= smoothstep(1.3, 2.2, r);
   float cellRnd = hash21(vec2(floor(r) + uBeatIndex * 7.13, floor(sp) + uBeatIndex * 3.71));
   float lit = step(1.0 - 0.20 * uEnergy, cellRnd) * smoothstep(1.6, 2.4, r);
-  float wave = exp(-pow((r - uBeatPhase * uStageR * 1.05) * 1.3, 2.0));
+  float waveQ = (r - uBeatPhase * uStageR * 1.05) * 1.3;
+  float wave = exp(-waveQ * waveQ);
   vec3 lineCol = mix(uColB, uColA, smoothstep(0.0, uStageR, r));
   vec3 em = lineCol * (ringLine * 0.55 + spoke * 0.30) * (0.10 + 0.25 * uEnergy + wave * uKick * 1.6);
   em += uColA * (lit * uKick * 0.20);
@@ -639,7 +640,7 @@ varying vec4 vBeam;
 varying float vSeed;
 ${GLSL_NOISE}
 void main() {
-  float facing = abs(dot(normalize(vN), normalize(vV)));
+  float facing = clamp(abs(dot(normalize(vN + vec3(0.0, 1e-5, 0.0)), normalize(vV))), 0.0, 1.0);
   float soft = pow(facing, 1.7);
   float along = pow(max(1.0 - vT, 0.0), 1.35) * smoothstep(0.0, 0.03, vT);
   float dust = 0.72 + 0.28 * vnoise2(vec2(vT * 14.0 - uTime * 0.6, vSeed * 10.0));
@@ -729,7 +730,7 @@ void main() {
   float hue = 0.5 + 0.5 * sin(u * 6.2831853 * 1.5 + uTime * 0.25 + idx * 2.0);
   vec3 c = mix(uColA, uColB, hue);
   c = mix(c, uColC, 0.25 * step(1.5, idx));
-  c += vec3(1.0) * pow(across, 6.0) * 0.25;
+  c += vec3(1.0) * pow(max(across, 0.0), 6.0) * 0.25;
   gl_FragColor = vec4(c * (across * flow * ends * uPower), 1.0);
 }
 `;
@@ -741,7 +742,7 @@ varying float vA;
 void main() {
   float d = length(gl_PointCoord - 0.5);
   float a = 1.0 - smoothstep(0.0, 0.5, d);
-  float glow = a * a + pow(a, 8.0) * 1.6;
+  float glow = a * a + pow(max(a, 0.0), 8.0) * 1.6;
   gl_FragColor = vec4(vCol * (glow * vA), 1.0);
 }
 `;
@@ -832,7 +833,7 @@ void main() {
   float depth = max(-mv.z, 0.05);
   gl_PointSize = min(aMeta.z * (1.0 - t * 0.5) * uScale / depth, uMaxSize);
   float flick = 0.7 + 0.3 * sin(age * 30.0 + aMeta.w * 50.0);
-  vA = pow(1.0 - t, 1.6) * flick;
+  vA = pow(max(1.0 - t, 0.0), 1.6) * flick;
   vCol = aColor;
 }
 `;
@@ -879,14 +880,14 @@ void main() {
       vec2 dp = p - uWaveGeo[i].xy;
       float r = length(dp);
       float theta = atan(dp.y, dp.x + 1e-4);
-      float e = 1.0 - pow(1.0 - t, 3.0);
+      float e = 1.0 - pow(max(1.0 - t, 0.0), 3.0);
       float rad = mix(uWaveGeo[i].z, uWaves[i].z, e);
-      float wdt = mix(0.20, 0.06, e) * uWaveGeo[i].w;
+      float wdt = max(mix(0.20, 0.06, e) * uWaveGeo[i].w, 1e-3);
       float q = (r - rad) / wdt;
       float ring = exp(-q * q);
       float inner = smoothstep(rad - 0.6, rad, r) * (1.0 - step(rad, r)) * 0.05; // hollow: a ring, not a dome
       float spark = 0.78 + 0.22 * sin(theta * 28.0 + age * 9.0 + float(i) * 2.0);
-      col += uWaveCols[i] * ((ring * spark + inner) * uWaves[i].y * pow(1.0 - t, 1.5));
+      col += uWaveCols[i] * ((ring * spark + inner) * uWaves[i].y * pow(max(1.0 - t, 0.0), 1.5));
     }
   }
   vec2 ed = abs(vUv - 0.5) * 2.0;
@@ -931,8 +932,8 @@ varying vec4 vColA;
 varying vec4 vColB;
 ${GLSL_NOISE}
 void main() {
-  float facing = abs(dot(normalize(vN + vec3(0.0, 1e-5, 0.0)), normalize(vV)));
-  float rim = pow(1.0 - facing, 1.6);
+  float facing = min(abs(dot(normalize(vN + vec3(0.0, 1e-5, 0.0)), normalize(vV))), 1.0);
+  float rim = pow(max(1.0 - facing, 0.0), 1.6); // pow of a negative base is NaN, and bloom turns one NaN pixel into a black disc
   float body = 0.14 * facing;
   float y = vT * vH;                                   // metres above the floor
   vec2 c = normalize(vXZ + vec2(1e-5, 0.0));           // seamless angle around the tube
@@ -1055,7 +1056,7 @@ void main() {
   float missL = 1.0 - smoothstep(0.30, 0.44, uv.x);
   float missR = smoothstep(0.56, 0.70, uv.x);
   float miss = uMiss.x * missL + uMiss.y * missR + min(uMiss.x, uMiss.y) * (1.0 - missL - missR);
-  col *= 1.0 - miss * 0.22;
+  col *= 1.0 - miss * 0.1;
 
   col = filmic(col);
 
@@ -2630,7 +2631,7 @@ export function createStage(canvas) {
     const accent = kick * energy;
     hemi.color.copy(HEMI_SKY).lerp(look.a, 0.22);
     hemi.intensity = 1.0 + 0.25 * energy;
-    keyLight.intensity = 2.15 + 0.35 * energy + lightFlash * 1.1 - missMax * 0.6;
+    keyLight.intensity = 2.15 + 0.35 * energy + lightFlash * 0.7 - missMax * 0.2;
     backLight.color.copy(STAR_CORE).lerp(look.c, 0.2);
     backLight.intensity = (2.6 + 1.2 * accent + starFlare * 3.0) * clamp(starPower, 0.5, 1.5);
     rimL.color.copy(look.b);
@@ -2655,7 +2656,7 @@ export function createStage(canvas) {
       let tz = -1.3 - Math.abs(Math.cos(psi)) * rho * 0.8;
       let col = i % 3 === 2 ? look.c : i % 2 ? look.b : look.a;
       const chase = lerp(1, i === chaseIdx ? 1.35 : 0.3, look.strobe);
-      let inten = beamBase * (0.55 + 0.45 * kick) * chase + lightFlash * 0.5;
+      let inten = beamBase * (0.8 + 0.2 * kick) * chase + lightFlash * 0.35;
       let radius = 0.55 + 0.25 * energy;
       // a hit on this flank: its three beams drop what they are doing and slam onto that
       // avatar's spot in the hit colour (the spot is beside and behind NOVA, like every target)
@@ -2669,10 +2670,10 @@ export function createStage(canvas) {
         inten += slam * tuning.sideBeams * fxPower;
         radius = lerp(radius, 0.62, w);
       }
-      inten *= 1 - 0.7 * missAmt[side];
+      inten *= 1 - 0.25 * missAmt[side];
       setBeam(i, tx, 0.0, tz, radius, col, inten);
     }
-    const fanOpen = Math.min(1, 0.25 + 0.75 * (0.35 * energy + 0.65 * kick) + fanFlash * 0.6);
+    const fanOpen = Math.min(1, 0.25 + 0.75 * (0.75 * energy + 0.25 * kick) + fanFlash * 0.5);
     const fanChase = ((beatFloor % BEAM_FAN) + BEAM_FAN) % BEAM_FAN;
     const fanTint = clamp01(fanFlash * 1.2);
     for (let i = 0; i < BEAM_FAN; i++) {
@@ -2685,7 +2686,7 @@ export function createStage(canvas) {
       const col = _c2.copy(i % 2 ? look.c : look.b).lerp(flashCol, fanTint);
       const chase = lerp(1, i === fanChase || i === BEAM_FAN - 1 - fanChase ? 1.3 : 0.4, look.strobe);
       // stage-wide answer (PERFECT / gold / combo): the whole fan at the back rim fires at once
-      const inten = (beamBase * 0.62 * (0.4 + 0.6 * kick) * chase + lightFlash * 0.35 + fanFlash * 1.5 * fxPower) * (1 - 0.5 * missMax);
+      const inten = (beamBase * 0.62 * (0.75 + 0.25 * kick) * chase + lightFlash * 0.25 + fanFlash * 0.9 * fxPower) * (1 - 0.2 * missMax);
       setBeam(bi, lampPos[k] + _v2.x * len, lampPos[k + 1] + _v2.y * len, lampPos[k + 2] + _v2.z * len, 1.5, col, inten);
     }
     beams.instanceMatrix.needsUpdate = true;
@@ -2704,7 +2705,7 @@ export function createStage(canvas) {
       const side = i < half ? 0 : 1;
       const tri = 1 - Math.abs(g * 2 - 1);
       let band = bassSm * (1 - g) * (1 - g) + midSm * tri + highSm * g * g;
-      band += kick * (1 - g) * 0.5;
+      band += kick * (1 - g) * 0.25;
       const jitter = 0.55 + 0.45 * Math.sin(pylonSeed[i] * 91.7 + stepIdx * 2.399);
       const idle = 0.16 + 0.1 * Math.sin(clock * 1.3 + (i % half) * 0.7);
       let targetH = idle + clamp01(band) * jitter * (1.2 + 1.5 * energy);
@@ -2715,7 +2716,7 @@ export function createStage(canvas) {
         jump += Math.exp(-x * x * 22) * pylonWaveGain * (1 - waveAge / 0.9);
       }
       targetH += jump * tuning.pylonJump * fxPower;
-      targetH *= 1 - 0.8 * missAmt[side];
+      targetH *= 1 - 0.35 * missAmt[side];
       const h0 = pylonH[i];
       const hNew = h0 + (targetH - h0) * damp(targetH > h0 ? 22 : 6, delta);
       pylonH[i] = hNew;
@@ -2728,7 +2729,7 @@ export function createStage(canvas) {
     pylons.instanceMatrix.needsUpdate = true;
     setU(pylonMat.uniforms, 'uColA', look.a);
     setU(pylonMat.uniforms, 'uColB', look.b);
-    setU(pylonMat.uniforms, 'uPower', (0.55 + 0.9 * energy + 0.5 * kick + lightFlash) * (1 - 0.4 * missMax));
+    setU(pylonMat.uniforms, 'uPower', (0.55 + 0.75 * energy + 0.2 * kick + lightFlash * 0.6) * (1 - 0.2 * missMax));
     const waveGlow = waveOn ? pylonWaveGain * (1 - waveAge / 0.9) : 0;
     _h4.set(sideCol[0].r, sideCol[0].g, sideCol[0].b, Math.min(1.6, pylonAmt[0] + waveGlow) * fxPower);
     setU(pylonMat.uniforms, 'uHitL', _h4);
@@ -2792,7 +2793,7 @@ export function createStage(canvas) {
     setU(dustMat.uniforms, 'uColB', look.b);
     setU(emberMat.uniforms, 'uTime', clock);
     setU(emberMat.uniforms, 'uAmount', clamp01(look.embers * (0.45 + 0.55 * energy) + rise * 0.3));
-    setU(emberMat.uniforms, 'uPower', 0.8 + 0.5 * kick);
+    setU(emberMat.uniforms, 'uPower', 0.85 + 0.2 * kick);
     _c1.copy(COL.amber).lerp(look.c, 0.35);
     _c2.copy(COL.coral).lerp(look.a, 0.35);
     setU(emberMat.uniforms, 'uColA', _c1);
@@ -2878,7 +2879,7 @@ export function createStage(canvas) {
 
     // --- post ---
     if (bloomPass) {
-      bloomPass.strength = tuning.bloomStrength + 0.1 * kick * energy + starFlare * 0.12 + lightFlash * 0.06;
+      bloomPass.strength = tuning.bloomStrength + 0.03 * kick * energy + starFlare * 0.1 + lightFlash * 0.04;
       bloomPass.radius = tuning.bloomRadius;
       bloomPass.threshold = tuning.bloomThreshold;
     }
@@ -2891,9 +2892,9 @@ export function createStage(canvas) {
       setU(finalU, 'uRayStrength', tuning.rayStrength * smooth01(0.25, 0.7, facing) * clamp(starPower, 0, 1.6) * (0.75 + 0.25 * energy + starFlare));
       setU(finalU, 'uRayDensity', tuning.rayDensity);
       setU(finalU, 'uTime', clock);
-      setU(finalU, 'uExposure', tuning.exposure * (1 + lightFlash * 0.08));
-      setU(finalU, 'uVignette', tuning.vignette + missMax * 0.18);
-      setU(finalU, 'uCA', tuning.chromaticAberration * (1 + caKick * 2.2 + kick * energy * 0.35));
+      setU(finalU, 'uExposure', tuning.exposure * (1 + lightFlash * 0.04));
+      setU(finalU, 'uVignette', tuning.vignette + missMax * 0.06);
+      setU(finalU, 'uCA', tuning.chromaticAberration * (1 + caKick * 1.4 + kick * energy * 0.12));
       setU(finalU, 'uGrain', tuning.grain);
       // rating glow on the frame edges, per side; MISS dip of that player's half
       const glow = tuning.edgeGlow * fxPower;

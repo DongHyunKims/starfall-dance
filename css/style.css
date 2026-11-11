@@ -1682,6 +1682,125 @@ body {
 
 .sf[data-players="2"] .tile { display: none; }
 
+/* 2P: each player's own camera view, at the screen edge on their side (below the rating band,
+   above the combo banner, beside their avatar). Shown only with a real camera. */
+.pcam {
+  --pc: var(--teal);
+  display: none;
+  position: absolute;
+  left: calc(var(--u) * 2.6);
+  top: calc(var(--u) * 23.4);
+  width: calc(var(--u) * 8.4);
+  height: calc(var(--u) * 11.2);
+  border-radius: calc(var(--u) * 0.4) calc(var(--u) * 1.2) calc(var(--u) * 0.4) calc(var(--u) * 1.2);
+  background: var(--ink-2);
+  box-shadow:
+    0 0 0 calc(var(--u) * 0.12) var(--pc),
+    0 calc(var(--u) * 0.6) calc(var(--u) * 1.8) rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  z-index: 1;
+}
+
+.pcam--p1 {
+  --pc: var(--coral);
+  left: auto;
+  right: calc(var(--u) * 2.6);
+  border-radius: calc(var(--u) * 1.2) calc(var(--u) * 0.4) calc(var(--u) * 1.2) calc(var(--u) * 0.4);
+}
+
+.sf[data-players="2"] .pcam { display: block; }
+
+/* no camera (demo): the tile says so instead of showing a picture */
+.pcam.is-off { box-shadow: 0 0 0 calc(var(--u) * 0.1) rgba(190, 176, 255, 0.4), 0 calc(var(--u) * 0.6) calc(var(--u) * 1.8) rgba(0, 0, 0, 0.45); }
+.pcam.is-off .pcam__canvas { visibility: hidden; }
+.pcam.is-off .pcam__tag i { display: none; }
+.pcam.is-off .pcam__tag { color: rgba(246, 241, 255, 0.75); }
+.pcam.is-off::after,
+.pcam.is-off .pcam__lost { opacity: 0; }
+
+.pcam__off {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--u) * 0.45);
+  padding: calc(var(--u) * 1.6) calc(var(--u) * 0.6) calc(var(--u) * 0.6);
+  text-align: center;
+  color: rgba(246, 241, 255, 0.86);
+}
+
+.pcam.is-off .pcam__off { display: flex; }
+
+.pcam__off b {
+  font: 800 calc(var(--u) * 0.86) / 1.2 var(--font-ko);
+  color: var(--gold);
+}
+
+.pcam__off i {
+  font: 500 calc(var(--u) * 0.6) / 1.35 var(--font-ko);
+  font-style: normal;
+  word-break: keep-all;
+  color: rgba(246, 241, 255, 0.72);
+}
+
+.pcam__canvas { display: block; width: 100%; height: 100%; }
+
+.pcam__tag {
+  position: absolute;
+  left: calc(var(--u) * 0.5);
+  top: calc(var(--u) * 0.45);
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--u) * 0.35);
+  padding: calc(var(--u) * 0.18) calc(var(--u) * 0.45);
+  border-radius: calc(var(--u) * 0.3);
+  background: rgba(11, 6, 32, 0.72);
+  color: var(--pc);
+  font: 800 calc(var(--u) * 0.72) / 1 var(--font-display);
+  letter-spacing: 0.06em;
+}
+
+.pcam__tag i {
+  font: 600 calc(var(--u) * 0.5) / 1 var(--font-display);
+  font-style: normal;
+  letter-spacing: 0.16em;
+  color: rgba(246, 241, 255, 0.72);
+}
+
+.pcam--p1 .pcam__tag { left: auto; right: calc(var(--u) * 0.5); }
+
+.pcam::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 calc(var(--u) * 0.22) var(--coral);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+
+.pcam.is-lost::after { opacity: 1; }
+
+.pcam__lost {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  padding: calc(var(--u) * 0.4) calc(var(--u) * 0.7);
+  border-radius: calc(var(--u) * 0.35);
+  background: var(--coral);
+  color: #ffffff;
+  font: 700 calc(var(--u) * 0.78) / 1 var(--font-ko);
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.pcam.is-lost .pcam__lost { opacity: 1; }
+
 .tile__view {
   position: relative;
   width: 100%;

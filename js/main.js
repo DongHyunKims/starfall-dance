@@ -4,6 +4,7 @@
 //   ?demo=1      never touch the camera: simulated players (js/demo-player.js) feed the judges
 //   ?players=2   with ?demo=1: run the demo with two players whichever button is pressed
 //   ?debug=1     fps + judge overlay, and window.__game.seek(beat)
+//   ?model=full  a more accurate (and slower) pose model for the camera
 //   ?telemetry=1 (see js/telemetry.js) post numbers about the run to the local dev server
 
 import { createStage, RATING_COLORS } from './stage.js';
@@ -45,7 +46,8 @@ stage.setMode('menu');
 stage.renderer.info.autoReset = false; // count draw calls across all passes of a frame
 
 const music = createMusic();
-const tracker = createPoseTracker(video);
+// ?model=full (or heavy) swaps in a more accurate, slower pose model; the default is the light one
+const tracker = createPoseTracker(video, { model: params.get('model') || 'lite' });
 
 // Scored moves with their pose resolved once, so the HUD never has to look poses up.
 const moves = MOVES.map((m) => ({ ...m, poseData: getPose(m.pose) }));
@@ -134,10 +136,23 @@ function setPlayerCount(n) {
     } else {
       P.avatar.setPresence(0, true);
     }
-    // alone on stage the tag says "me"; with two players it says who is who
-    if (P.avatar.setLabel) P.avatar.setLabel(playerCount === 2 ? (i ? 'P2' : 'P1') : '나');
   }
+  labelAvatars();
   tracker.setMaxPlayers(playerCount);
+}
+
+/**
+ * Avatar tags. Alone on stage the tag says "me"; with two players it says who is who. In a demo
+ * nobody is being filmed: the tag says so, because a figure dancing next to the coach is
+ * otherwise taken for one's own.
+ */
+function labelAvatars() {
+  for (let i = 0; i < MAX_PLAYERS; i++) {
+    const a = players[i].avatar;
+    if (!a.setLabel) continue;
+    if (demo) a.setLabel(playerCount === 2 ? (i ? 'DEMO 2' : 'DEMO 1') : 'DEMO');
+    else a.setLabel(playerCount === 2 ? (i ? 'P2' : 'P1') : '나');
+  }
 }
 
 function resetPlayers() {
@@ -189,6 +204,7 @@ function startCountdown() {
   countdownStalled = false;
   clockStop();
   resetPlayers();
+  labelAvatars(); // `demo` is settled by now
   rewindTo = null;
   lastSongT = 0;
   resultStats = null;
@@ -457,7 +473,7 @@ function drawDebug(now, t, beat, section) {
   }
   if (!demo) {
     const td = tracker.debug;
-    lines.push(`tracker ${td.delegate} ${td.fps.toFixed(0)}fps ${td.inferMs.toFixed(1)}ms`);
+    lines.push(`tracker ${td.model} ${td.delegate} ${td.fps.toFixed(0)}fps ${td.inferMs.toFixed(1)}ms  depth ${results[0] && results[0].has3d ? 'on' : 'off'}`);
   }
   const md = music.isReady ? music.debug : null;
   if (md) lines.push(`audio ${md.state} latency ${(md.latency * 1000).toFixed(0)}ms ctx ${md.context.state}`);

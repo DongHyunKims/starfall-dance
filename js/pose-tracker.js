@@ -23,7 +23,12 @@
 
 const VISION_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
 const WASM_ROOT = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm';
-const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
+const MODEL_URLS = Object.freeze({
+  lite: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+  // more accurate (crossed arms, forearms), roughly twice the inference time and a 9 MB download
+  full: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task',
+  heavy: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task',
+});
 
 // MediaPipe pose landmark indices.
 const LM = Object.freeze({
@@ -52,8 +57,8 @@ export const SKELETON_EDGES = Object.freeze([
 /** Tuning knobs; override any of them through createPoseTracker(videoEl, options). */
 export const TRACKER_DEFAULTS = Object.freeze({
   // One-Euro filter on landmark positions (normalised image units, seconds).
-  minCutoff: 1.7,   // Hz. Lower = steadier when still, more lag on slow moves.
-  beta: 6.0,        // Speed coefficient. Higher = less lag on fast moves, more jitter.
+  minCutoff: 2.0,   // Hz. Lower = steadier when still, more lag on slow moves.
+  beta: 8.0,        // Speed coefficient. Higher = less lag on fast moves, more jitter.
   dCutoff: 1.0,     // Hz, derivative low-pass.
   visibilityTau: 0.08, // s, smoothing of per-landmark visibility.
   // Detector thresholds.
@@ -98,6 +103,15 @@ export const TRACKER_DEFAULTS = Object.freeze({
   completeConfHigh: 0.6,
   // Forward z given to a flat (2D) arm segment, per unit of its on-screen length.
   armForwardZ: 0.12,
+  // Avatars: how much of MediaPipe's estimated depth (world landmarks) goes into pose3d.
+  // 1 = as estimated; depth from one camera is the noisiest axis, so it is damped a little.
+  depthGain: 0.8,
+  // A landmark this far outside the frame (fraction of the frame size) still counts fully;
+  // its weight then fades to zero over offFrameFade. MediaPipe extrapolates a wrist that leaves
+  // the picture quite well as long as the elbow is in it, and players standing close to the
+  // camera reach out of frame on every sideways move.
+  offFrameFree: 0.06,
+  offFrameFade: 0.25,
   // Consecutive detector failures before the GPU delegate is swapped for CPU.
   maxErrors: 3,
   // Camera request.
@@ -154,6 +168,10 @@ const PX = new Float64Array(LANDMARK_COUNT + 3);
 const PY = new Float64Array(LANDMARK_COUNT + 3);
 const VIS = new Float64Array(LANDMARK_COUNT + 3);
 const SEG_CONF = new Float64Array(SEGMENTS.length);
+const SEG_VIS = new Float64Array(SEGMENTS.length);
+const WX = new Float64Array(LANDMARK_COUNT + 3);
+const WY = new Float64Array(LANDMARK_COUNT + 3);
+const WZ = new Float64Array(LANDMARK_COUNT + 3);
 // Segment i runs from point SEG_FROM[i] to point SEG_TO[i] (same order as SEGMENTS).
 const SEG_FROM = Int8Array.of(PT_HIPS, PT_SHOULDERS, LM.L_SHOULDER, LM.L_ELBOW, LM.R_SHOULDER, LM.R_ELBOW,
   LM.L_HIP, LM.L_KNEE, LM.R_HIP, LM.R_KNEE);
@@ -168,7 +186,18 @@ function makePoseResult() {
     pose[SEGMENTS[i]] = [0, i < 2 ? 1 : -1, 0];
     confidence[SEGMENTS[i]] = 0;
   }
-  return { pose, confidence, bodyVisible: 0, upperVisible: 0, cx: 0.5, cy: 0.5, size: 0 };
+  const pose3d = { hipX: 0, yaw: 0 };
+  const conf3d = {};
+  for (let i = 0; i < SEGMENTS.length; i++) {
+    pose3d[SEGMENTS[i]] = [0, i < 2 ? 1 : -1, 0];
+    conf3d[SEGMENTS[i]] = 0;
+  }
+  // pose / confidence: the flat, on-screen pose the judge and the HUD use.
+  // pose3d / conf3d: the same pose with depth (from world landmarks) for driving an avatar;
+  // has3d says whether pose3d is filled in. conf3d is plain visibility: unlike `confidence` it
+  // is not reduced when a limb points at the camera, because depth is exactly what tells an
+  // avatar where that limb is.
+  return { pose, confidence, pose3d, conf3d, has3d: false, bodyVisible: 0, upperVisible: 0, cx: 0.5, cy: 0.5, size: 0 };
 }
 
 /**
@@ -183,9 +212,11 @@ function makePoseResult() {
  *   cx, cy        shoulder midpoint: mirrored x (0 = screen left) and y (0 = top), 0..1;
  *   size          shoulder width as a fraction of the image width (how prominent the person is).
  */
-export function poseFromLandmarks(lm, aspect = 4 / 3, out) {
+export function poseFromLandmarks(lm, aspect = 4 / 3, out, tuning) {
   const a = Number.isFinite(aspect) && aspect > 0 ? aspect : 4 / 3;
   const res = out && out.pose && out.confidence ? out : makePoseResult();
+  const free = tuning && Number.isFinite(tuning.offFrameFree) ? tuning.offFrameFree : TRACKER_DEFAULTS.offFrameFree;
+  const fade = tuning && tuning.offFrameFade > 0 ? tuning.offFrameFade : TRACKER_DEFAULTS.offFrameFade;
 
   // Landmarks -> scratch. Visibility counts fully inside the frame and fades to 0 a little
   // outside it (MediaPipe extrapolates off-screen joints).
@@ -197,7 +228,7 @@ export function poseFromLandmarks(lm, aspect = 4 / 3, out) {
     PY[i] = y;
     const ox = x < 0 ? -x : x > 1 ? x - 1 : 0;
     const oy = y < 0 ? -y : y > 1 ? y - 1 : 0;
-    let u = ((ox > oy ? ox : oy) - 0.02) / 0.1;
+    let u = ((ox > oy ? ox : oy) - free) / fade;
     u = u < 0 ? 0 : u > 1 ? 1 : u;
     const v = +p.v;
     VIS[i] = (v < 0 ? 0 : v > 1 ? 1 : v) * (1 - u * u * (3 - 2 * u));
@@ -229,6 +260,8 @@ export function poseFromLandmarks(lm, aspect = 4 / 3, out) {
     const dy = -(PY[t] - PY[f]);
     const len = Math.sqrt(dx * dx + dy * dy);
     const v = pose[SEGMENTS[i]];
+    // visibility of the weaker end, whatever the on-screen length (see conf3d)
+    SEG_VIS[i] = VIS[f] < VIS[t] ? VIS[f] : VIS[t];
     if (!(len > 1e-6)) {
       v[0] = 0; v[1] = i < 2 ? 1 : -1; v[2] = 0;
       SEG_CONF[i] = 0;
@@ -248,6 +281,14 @@ export function poseFromLandmarks(lm, aspect = 4 / 3, out) {
   conf.rUpperArm = SEG_CONF[4]; conf.rForearm = SEG_CONF[5];
   conf.lThigh = SEG_CONF[6]; conf.lShin = SEG_CONF[7];
   conf.rThigh = SEG_CONF[8]; conf.rShin = SEG_CONF[9];
+  const c3 = res.conf3d;
+  if (c3) {
+    c3.spine = SEG_VIS[0]; c3.head = SEG_VIS[1];
+    c3.lUpperArm = SEG_VIS[2]; c3.lForearm = SEG_VIS[3];
+    c3.rUpperArm = SEG_VIS[4]; c3.rForearm = SEG_VIS[5];
+    c3.lThigh = SEG_VIS[6]; c3.lShin = SEG_VIS[7];
+    c3.rThigh = SEG_VIS[8]; c3.rShin = SEG_VIS[9];
+  }
 
   // How much of the body is usable: torso and arms matter most, feet least.
   const upper = VIS[LS] + VIS[RS] + VIS[LM.L_ELBOW] + VIS[LM.R_ELBOW] + VIS[LM.L_WRIST] + VIS[LM.R_WRIST];
@@ -264,6 +305,51 @@ export function poseFromLandmarks(lm, aspect = 4 / 3, out) {
   const size = len2(PX[LS] - PX[RS], (PY[LS] - PY[RS]) / a);
   res.size = Number.isFinite(size) ? size : 0;
   return res;
+}
+
+/**
+ * Fill `res.pose3d` from MediaPipe WORLD landmarks (metres, hip-centred, x to the image right,
+ * y down, z away from the camera — raw, un-mirrored). The result is in stage space and mirrored
+ * like everything else: +x = screen right, +y = up, +z = toward the viewer, so a hand the
+ * player pushes toward the camera comes out of the screen on the avatar.
+ * @param {Float64Array|Array} world  33 points as a flat [x0, y0, z0, x1, …] array (length >= 99)
+ * @param {object} res  a pose result (from makePoseResult / poseFromLandmarks)
+ * @param {number} [depthGain]  scale of the depth component (default TRACKER_DEFAULTS.depthGain)
+ * @returns {boolean} true when pose3d was written
+ */
+export function pose3dFromWorld(world, res, depthGain) {
+  if (!world || world.length < LANDMARK_COUNT * 3 || !res || !res.pose3d) return false;
+  const g = Number.isFinite(depthGain) ? depthGain : TRACKER_DEFAULTS.depthGain;
+  for (let i = 0; i < LANDMARK_COUNT; i++) {
+    const x = +world[i * 3], y = +world[i * 3 + 1], z = +world[i * 3 + 2];
+    if (!(x === x && y === y && z === z)) return false; // NaN anywhere: keep the flat pose
+    WX[i] = -x;       // mirror
+    WY[i] = -y;       // image-down -> up
+    WZ[i] = -z * g;   // away from the camera -> toward the viewer
+  }
+  const LS = LM.L_SHOULDER, RS = LM.R_SHOULDER, LH = LM.L_HIP, RH = LM.R_HIP;
+  WX[PT_SHOULDERS] = (WX[LS] + WX[RS]) / 2; WY[PT_SHOULDERS] = (WY[LS] + WY[RS]) / 2; WZ[PT_SHOULDERS] = (WZ[LS] + WZ[RS]) / 2;
+  WX[PT_HIPS] = (WX[LH] + WX[RH]) / 2; WY[PT_HIPS] = (WY[LH] + WY[RH]) / 2; WZ[PT_HIPS] = (WZ[LH] + WZ[RH]) / 2;
+  WX[PT_HEAD] = ((WX[LM.L_EAR] + WX[LM.R_EAR]) / 2 + WX[LM.NOSE]) / 2;
+  WY[PT_HEAD] = ((WY[LM.L_EAR] + WY[LM.R_EAR]) / 2 + WY[LM.NOSE]) / 2;
+  WZ[PT_HEAD] = ((WZ[LM.L_EAR] + WZ[LM.R_EAR]) / 2 + WZ[LM.NOSE]) / 2;
+  const p3 = res.pose3d;
+  const flat = res.pose;
+  for (let i = 0; i < SEGMENTS.length; i++) {
+    const f = SEG_FROM[i];
+    const t = SEG_TO[i];
+    let dx = WX[t] - WX[f], dy = WY[t] - WY[f], dz = WZ[t] - WZ[f];
+    // torso and head: depth there is mostly lean toward the camera, which the nose landmark
+    // exaggerates — keep them upright-ish
+    if (i < 2) dz *= 0.35;
+    const l = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    const v = p3[SEGMENTS[i]];
+    if (l > 1e-6) { v[0] = dx / l; v[1] = dy / l; v[2] = dz / l; }
+    else { const q = flat[SEGMENTS[i]]; v[0] = q[0]; v[1] = q[1]; v[2] = q[2]; }
+  }
+  p3.hipX = 0;
+  p3.yaw = 0;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -562,10 +648,13 @@ export function completePose(result, fallbackPose, out, tuning) {
   const cfg = tuning || TRACKER_DEFAULTS;
   const o = out || {};
   const fb = fallbackPose || REST_POSE;
-  const pose = result && result.pose && typeof result.pose === 'object' ? result.pose
-    : (result && isVec3(result.spine) ? result : null);
-  const conf = pose && result.pose === pose && result.confidence && typeof result.confidence === 'object'
-    ? result.confidence : null;
+  const use3d = !!(result && result.has3d === true && result.pose3d && typeof result.pose3d === 'object');
+  const pose = use3d ? result.pose3d
+    : (result && result.pose && typeof result.pose === 'object' ? result.pose
+      : (result && isVec3(result.spine) ? result : null));
+  const conf = use3d
+    ? (result.conf3d && typeof result.conf3d === 'object' ? result.conf3d : result.confidence || null)
+    : (pose && result.pose === pose && result.confidence && typeof result.confidence === 'object' ? result.confidence : null);
   const lo = cfg.completeConfLow;
   const span = cfg.completeConfHigh - lo;
   let legs = 0;
@@ -662,6 +751,9 @@ export function createPoseTracker(videoEl, options = {}) {
   let errorCount = 0;
 
   let maxPlayers = cfg.maxPlayers === 2 ? 2 : 1;
+  // options.model: 'lite' (default) | 'full' | 'heavy'
+  const modelName = Object.prototype.hasOwnProperty.call(MODEL_URLS, options.model) ? options.model : 'lite';
+  const modelUrl = MODEL_URLS[modelName];
   let numPoses = 0;         // what the current landmarker is configured for (0 = none yet)
   let configuring = null;   // promise while numPoses is being changed
   let configFailed = 0;     // a numPoses value that could not be applied (not retried on its own)
@@ -688,6 +780,11 @@ export function createPoseTracker(videoEl, options = {}) {
     return {
       filter: createOneEuro(LANDMARK_COUNT * 2, cfg),
       coords: new Float64Array(LANDMARK_COUNT * 2),
+      // world landmarks are in metres (about 3x the numbers of normalised image units) and
+      // their depth is the noisiest axis: a slightly lower cutoff keeps the avatar steady
+      filter3: createOneEuro(LANDMARK_COUNT * 3, { minCutoff: cfg.minCutoff * 0.8, beta: cfg.beta / 3, dCutoff: cfg.dCutoff }),
+      world: new Float64Array(LANDMARK_COUNT * 3),
+      zAgree: 1, // does world depth point the same way as the image landmarks' depth? (+1 yes … -1 no)
       vis: new Float64Array(LANDMARK_COUNT),
       visPrimed: false,
       lastDetectMs: NaN, // nowMs of this slot's previous detection (filter dt)
@@ -709,7 +806,7 @@ export function createPoseTracker(videoEl, options = {}) {
     detViews.push(detPool.slice(0, i + 1));
   }
 
-  const debugInfo = { delegate, fps: 0, inferMs: 0, errorCount: 0, maxPlayers, numPoses: 0, people: 0, ids: [0, 0] };
+  const debugInfo = { delegate, model: modelName, fps: 0, inferMs: 0, errorCount: 0, maxPlayers, numPoses: 0, people: 0, ids: [0, 0], depth: false };
 
   const report = (cb, p, text) => {
     if (typeof cb !== 'function') return;
@@ -717,7 +814,7 @@ export function createPoseTracker(videoEl, options = {}) {
   };
 
   async function fetchModel(onProgress) {
-    const res = await fetch(MODEL_URL, { mode: 'cors', credentials: 'omit' });
+    const res = await fetch(modelUrl, { mode: 'cors', credentials: 'omit' });
     if (!res.ok) throw new Error(`model HTTP ${res.status}`);
     const total = Number(res.headers.get('content-length')) || 0;
     if (!res.body || !total) {
@@ -746,7 +843,7 @@ export function createPoseTracker(videoEl, options = {}) {
     const want = maxPlayers; // the detector is built for the player count of this moment
     const make = (which) => vision.PoseLandmarker.createFromOptions(fileset, {
       baseOptions: {
-        ...(modelBuffer ? { modelAssetBuffer: modelBuffer } : { modelAssetPath: MODEL_URL }),
+        ...(modelBuffer ? { modelAssetBuffer: modelBuffer } : { modelAssetPath: modelUrl }),
         delegate: which,
       },
       runningMode: 'VIDEO',
@@ -878,6 +975,9 @@ export function createPoseTracker(videoEl, options = {}) {
 
   function resetSlot(rt) {
     rt.filter.reset();
+    rt.filter3.reset();
+    rt.zAgree = 1;
+    rt.result.has3d = false;
     rt.visPrimed = false;
     rt.lastDetectMs = NaN;
     rt.has = false;
@@ -1009,7 +1109,7 @@ export function createPoseTracker(videoEl, options = {}) {
   }
 
   // One person's raw landmarks -> the slot's filters -> the slot's result (in place).
-  function ingest(rt, raw, nowMs, aspect) {
+  function ingest(rt, raw, nowMs, aspect, rawWorld) {
     // Smooth in raw image space, then mirror.
     // (if / else rather than `p ? p.x : NaN`, and the unary plus further down: mixing a
     // property read with a constant in one expression makes V8 box the number — per landmark.)
@@ -1049,7 +1149,36 @@ export function createPoseTracker(videoEl, options = {}) {
     rt.visPrimed = true;
     rt.lastDetectMs = nowMs;
 
-    poseFromLandmarks(landmarks, aspect, res);
+    poseFromLandmarks(landmarks, aspect, res, cfg);
+    // Depth for the avatar. Anything odd here (no world landmarks, a short array, NaN) simply
+    // leaves has3d false and the avatar falls back to the flat pose.
+    let has3d = false;
+    if (rawWorld && rawWorld.length >= LANDMARK_COUNT) {
+      const w = rt.world;
+      let ok = true;
+      for (let i = 0; i < LANDMARK_COUNT; i++) {
+        const p = rawWorld[i];
+        if (p) { w[i * 3] = +p.x; w[i * 3 + 1] = +p.y; w[i * 3 + 2] = +p.z; } else { ok = false; break; }
+      }
+      if (ok) {
+        // Safety net for the depth direction: the image landmarks' z is documented ("smaller =
+        // closer to the camera"); the world landmarks should point the same way. Compare where
+        // the elbows and wrists sit relative to the shoulders in both and, should they ever
+        // disagree consistently, flip the world depth instead of bending arms backwards.
+        const s0 = raw[LM.L_SHOULDER], s1 = raw[LM.R_SHOULDER];
+        if (s0 && s1) {
+          const nz = (+s0.z + +s1.z) / 2;
+          const wz = (w[LM.L_SHOULDER * 3 + 2] + w[LM.R_SHOULDER * 3 + 2]) / 2;
+          let dot = 0;
+          for (let j = LM.L_ELBOW; j <= LM.R_WRIST; j++) dot += (w[j * 3 + 2] - wz) * (+raw[j].z - nz);
+          if (dot === dot && (dot > 1e-4 || dot < -1e-4)) rt.zAgree += ((dot > 0 ? 1 : -1) - rt.zAgree) * 0.04;
+        }
+        rt.filter3.apply(w, dt);
+        has3d = pose3dFromWorld(w, res, rt.zAgree < -0.25 ? -cfg.depthGain : cfg.depthGain);
+      }
+    }
+    if (!has3d) rt.filter3.reset();
+    res.has3d = has3d;
     res.t = nowMs;
     res.aspect = aspect;
     res.id = rt.id;
@@ -1090,6 +1219,7 @@ export function createPoseTracker(videoEl, options = {}) {
 
       // Everybody in this frame: where they stand and how big they are (raw x is un-mirrored).
       const poses = out ? out.landmarks : null;
+      const worlds = out && Array.isArray(out.worldLandmarks) ? out.worldLandmarks : null;
       let n = 0;
       if (poses) {
         for (let i = 0; i < poses.length && n < MAX_DETECTIONS; i++) {
@@ -1121,7 +1251,10 @@ export function createPoseTracker(videoEl, options = {}) {
           resetSlot(rt);
           rt.id = slot.id;
         }
-        if (slot.id !== 0 && slot.det >= 0) ingest(rt, poses[dets[slot.det].index], now, aspect);
+        if (slot.id !== 0 && slot.det >= 0) {
+          const di = dets[slot.det].index;
+          ingest(rt, poses[di], now, aspect, worlds ? worlds[di] : null);
+        }
       }
     } catch (e) {
       // The game loop must survive anything that goes wrong in here.
@@ -1180,6 +1313,7 @@ export function createPoseTracker(videoEl, options = {}) {
       debugInfo.maxPlayers = maxPlayers;
       debugInfo.numPoses = numPoses;
       debugInfo.people = slotState.people;
+      debugInfo.depth = slotRT[0].has && slotRT[0].result.has3d === true;
       debugInfo.ids[0] = slotState.slots[0].id;
       debugInfo.ids[1] = slotState.slots[1].id;
       return debugInfo;

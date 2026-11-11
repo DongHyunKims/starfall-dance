@@ -86,7 +86,7 @@ export const TUNING = Object.freeze({
   // (for instance both arms thrown up on a move that raises one).
   armGateLow: 0.12,
   armGateHigh: 0.4,
-  armGateCap: 0.58,
+  armGateCap: 0.53,
   // A target segment pointing mostly at the camera has no trustworthy 2D direction.
   // Its weight fades out as its x/y length drops from foreshortenFull to foreshortenZero.
   foreshortenZero: 0.2,
@@ -106,13 +106,16 @@ export const TUNING = Object.freeze({
   minUpperVisible: 0.5,
   upperShareOfBody: 10 / 17,
   // Follow window around the beat, in seconds: people watch the move land, then copy it.
+  // Simulated followers were fine up to 0.85 s behind and fell off a cliff at 1.0 s with the
+  // earlier 0.95 s window; first-time players are often that late, so the window now runs to
+  // about the next move's beat plus half a second.
   windowBefore: 0.10,
-  windowAfter: 0.95,
+  windowAfter: 1.45,
   // When the next scored move is close, the window ends no later than windowAfterGapShare of
   // the gap plus windowNextSlack past this move's beat (neighbouring windows overlap a little
   // and the same sample may count for both).
-  windowAfterGapShare: 0.95,
-  windowNextSlack: 0.35,
+  windowAfterGapShare: 1.0,
+  windowNextSlack: 0.5,
   // A move is judged this long after its window closes.
   judgeDelay: 0.01,
   // Time constant of the short smoothing applied to the per-frame match before taking the best
@@ -153,11 +156,12 @@ export const TUNING = Object.freeze({
   followMinArm: 0.35,
   followBaseTau: 0.1,
   followHold: 0.15,
-  // Ratings. GOOD on the match alone is deliberately demanding (two different moves of a
-  // routine are often 0.5–0.65 alike), barely below SUPER; the usual way to a GOOD is the
-  // follow assist above: an OK-level match that the player visibly moved into and held with
-  // both arms.
-  thresholds: Object.freeze({ perfect: 0.86, super: 0.70, good: 0.68, ok: 0.32 }),
+  // Ratings. GOOD is a rough but recognisable attempt (about 45 deg off on the arms): players
+  // asked for "follow the move and you get at least GOOD". Two different moves of a routine are
+  // often 0.5–0.65 alike, so GOOD no longer proves the RIGHT move was made — SUPER and PERFECT
+  // do. Below GOOD the follow assist above still lifts an OK-level match that the player
+  // visibly moved into and held with both arms.
+  thresholds: Object.freeze({ perfect: 0.86, super: 0.70, good: 0.55, ok: 0.30 }),
   points: Object.freeze({ perfect: 1000, super: 700, good: 400, ok: 150, miss: 0 }),
   goldMultiplier: 2,
   // Combo multiplier: +comboStepBonus every comboStep consecutive hits, capped at comboMaxMultiplier.
