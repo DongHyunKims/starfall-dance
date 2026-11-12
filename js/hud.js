@@ -6,10 +6,17 @@
 //
 // Player index 0 = P1 (screen-left, teal), 1 = P2 (screen-right, coral). Every
 // `player` argument defaults to 0, so v1 callers keep working unchanged.
+//
+// Two game modes share this HUD: 'dance' (the default, one or two players) and 'slash'
+// ("STAR SLASH", one player). The run screens are laid out for the slash mode only when the
+// game asks for it (setMode / showScreen(name, { mode }) / showResults(stats, { mode })), so a
+// caller that knows nothing about the second mode keeps getting the dance HUD.
 
 // ---------------------------------------------------------------------------
 // Shared constants
 // ---------------------------------------------------------------------------
+
+import { SONGS, SONG_IDS, DEFAULT_SONG, timingOf } from './song.js';
 
 const RATING_ORDER = ['perfect', 'super', 'good', 'ok', 'miss'];
 
@@ -103,6 +110,47 @@ const PLAYER_TAGS = ['P1', 'P2'];
 
 const BEST_KEY = 'starfall.best';
 const DEMO_ONLY = typeof window !== 'undefined' && window.STARFALL_DEMO_ONLY === true;
+
+// ---------------------------------------------------------------------------
+// STAR SLASH (the second mode: one player cuts star shards with both hands)
+// ---------------------------------------------------------------------------
+
+const DIFFICULTIES = ['easy', 'normal', 'hard'];
+const DIFFICULTY_LABELS = { easy: '쉬움', normal: '보통', hard: '어려움' };
+
+const SLASH_ORDER = ['perfect', 'good', 'bad', 'miss'];
+const SLASH_WORDS = { perfect: 'PERFECT', good: 'GOOD', bad: 'BAD', miss: 'MISS' };
+const SLASH_RANKS = ['S', 'A', 'B', 'C', 'D'];
+const SLASH_RANK_STARS = { S: 5, A: 4, B: 3, C: 2, D: 1 };
+const SLASH_TITLES = { S: '슈퍼노바!', A: '눈부신 궤적', B: '빛나는 궤적', C: '좋은 출발', D: '다시 도전!' };
+const SLASH_HINT = '빛나는 선 방향으로 손을 휘둘러 베세요';
+
+const CAMERA_STATUS_SLASH = {
+  requesting: '카메라를 준비하는 중…',
+  searching: '아직 보이지 않아요. 카메라 앞에 서 주세요',
+  almost: '조금만 더! 두 손이 화면 안에 들어오게 서 주세요',
+  ready: '좋아요! 그대로 잠깐만 계세요',
+  go: '준비 완료! 곧 시작합니다',
+};
+
+// hand colours of the mode: screen-left hand teal, screen-right hand amber
+const HAND_COLORS = [C_TEAL, C_GOLD];
+const C_SLASH_BONE = '#d9d2ff'; // the skeleton stays neutral so the two hand marks carry the colour
+
+const MRING_STEPS = 8; // segments of the multiplier ring (the judge steps the multiplier every 8 hits)
+const POP_COUNT = 12; // pooled rating pops: never more than this many on screen
+
+const MODE_KEY = 'starfall.mode';
+const SONG_KEY = 'starfall.song'; // the song picked on the title (each song is one difficulty)
+const SLASH_BEST_KEY = 'starfall.slash.best.'; // + difficulty
+
+// "0" .. "9" and "×0" .. "×9": looked up, never built, where a value may change during play
+const DIGIT_TEXT = [];
+const MULT_TEXT = [];
+for (let i = 0; i < 10; i++) {
+  DIGIT_TEXT.push(String(i));
+  MULT_TEXT.push('×' + i);
+}
 
 // ---------------------------------------------------------------------------
 // Live match colours ("sync")
@@ -507,6 +555,8 @@ const DECO = {
   chest: P([0, 1, 0], [0.06, 1, 0], [-0.62, -0.78, 0], [0.5, 0.86, 0], [0.62, -0.78, 0], [-0.5, 0.86, 0], [-0.16, -1, 0], [0, -1, 0], [0.16, -1, 0], [0, -1, 0]),
   hips: P([0.05, 1, 0], [-0.08, 1, 0], [-0.76, -0.65, 0], [0.74, -0.67, 0], [0.76, -0.65, 0], [-0.74, -0.67, 0], [-0.24, -1, 0], [0.04, -1, 0], [0.2, -1, 0], [0, -1, 0], 0.05),
   sway: P([-0.08, 1, 0], [0.1, 1, 0], [-0.86, -0.5, 0], [-0.9, -0.44, 0], [0.5, -0.86, 0], [-0.62, 0.78, 0], [-0.3, -0.95, 0], [0.06, -1, 0], [0.14, -1, 0], [0, -1, 0], -0.07),
+  // STAR SLASH: both hands up beside the shoulders, where the camera can see them
+  guard: P([0, 1, 0], [0, 1, 0], [-0.55, -0.83, 0], [-0.5, 0.87, 0], [0.55, -0.83, 0], [0.5, 0.87, 0], [-0.12, -1, 0], [0, -1, 0], [0.12, -1, 0], [0, -1, 0]),
 };
 
 const LOADING_SEQ = [DECO.idle, DECO.hips, DECO.sway, DECO.chest, DECO.point, DECO.star, DECO.reach];
@@ -601,21 +651,52 @@ function makeSprite(w, h) {
   return c;
 }
 
-function readBest() {
+// dance records are kept per song (STARFALL keeps the key it always had)
+const songBestKey = (id) => (id === DEFAULT_SONG ? BEST_KEY : BEST_KEY + '.' + id);
+
+// "1분 35초"
+function songLength(id) {
+  const sec = Math.round(timingOf(SONGS[id]).duration - 1);
+  return Math.floor(sec / 60) + '분 ' + (sec % 60) + '초';
+}
+
+function readBest(key) {
   try {
-    const v = parseInt(window.localStorage.getItem(BEST_KEY), 10);
+    const v = parseInt(window.localStorage.getItem(key || BEST_KEY), 10);
     return Number.isFinite(v) && v > 0 ? v : 0;
   } catch (e) {
     return 0;
   }
 }
 
-function writeBest(v) {
+function writeBest(v, key) {
   try {
-    window.localStorage.setItem(BEST_KEY, String(Math.round(v)));
+    window.localStorage.setItem(key || BEST_KEY, String(Math.round(v)));
   } catch (e) {
     /* storage unavailable: best score simply is not persisted */
   }
+}
+
+// remembered choices of the title screen and the STAR SLASH records
+function readStored(key) {
+  try {
+    return window.localStorage.getItem(key);
+  } catch (e) {
+    return null;
+  }
+}
+
+function writeStored(key, value) {
+  try {
+    window.localStorage.setItem(key, String(value));
+  } catch (e) {
+    /* storage unavailable: the choice simply is not remembered */
+  }
+}
+
+function readStoredScore(key) {
+  const v = parseInt(readStored(key), 10);
+  return Number.isFinite(v) && v > 0 ? v : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -629,6 +710,9 @@ const WARN_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5 2
 const ONE_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a4 4 0 1 1 0 8 4 4 0 0 1 0-8ZM4.5 20c0-4.2 3.2-7 7.5-7s7.5 2.8 7.5 7c0 .6-.4 1-1 1h-13c-.6 0-1-.4-1-1Z"/></svg>';
 const TWO_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7ZM2.2 20c0-4 3-6.5 6.8-6.5s6.8 2.5 6.8 6.5c0 .6-.4 1-1 1H3.2c-.6 0-1-.4-1-1ZM17 5a3 3 0 1 1 0 6 3 3 0 0 1 0-6Zm.8 16h3c.6 0 1-.4 1-1 0-3.4-2.3-5.8-5.6-6.2 1.3 1.5 2 3.5 2 5.9 0 .5-.1.9-.4 1.3Z"/></svg>';
 const CROWN_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17.5 4.2 7.5l4.6 3.9L12 4.5l3.2 6.9 4.6-3.9L21 17.5Zm.8 1.5h16.4v1.5H3.8Z"/></svg>';
+// mode marks: a dancing figure, and a star shard cut in two along its line
+const DANCE_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12.6" cy="4.2" r="2.5"/><path fill="none" stroke="currentColor" stroke-width="2.7" stroke-linecap="round" stroke-linejoin="round" d="M12 9.2v5.6M12 10 6.6 6.2M12 10l5.6 2.8M12 14.8l-3.8 6.4M12 14.8l4.6 5.2"/></svg>';
+const SLASH_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11.6 1.4 18.3 6.8 5.5 14.7 3.6 7.9ZM19 8l1.4 1.1-3.5 13h-9l-1.7-6.2Z"/></svg>';
 
 function btn(kind, act, inner, extra, attrs) {
   return `<button type="button" class="btn btn--${kind}${extra ? ' ' + extra : ''}" data-act="${act}"${attrs ? ' ' + attrs : ''}><i class="btn__bg"><i class="btn__shine"></i></i><span class="btn__label">${inner}</span></button>`;
@@ -692,6 +776,39 @@ function sparkSpans(n) {
   return h;
 }
 
+// STAR SLASH multiplier ring: eight arcs of a 48-unit circle, clockwise from the top. One lights
+// up per hit of the current step; the multiplier itself sits in the middle.
+function ringArcs() {
+  const step = 360 / MRING_STEPS;
+  const at = (deg) => {
+    const a = (deg * Math.PI) / 180;
+    return (24 + 20 * Math.cos(a)).toFixed(2) + ' ' + (24 + 20 * Math.sin(a)).toFixed(2);
+  };
+  let h = '';
+  for (let i = 0; i < MRING_STEPS; i++) {
+    h += `<path d="M${at(-90 + i * step + 6.5)}A20 20 0 0 1 ${at(-90 + (i + 1) * step - 6.5)}"/>`;
+  }
+  return h;
+}
+
+function mringMarkup() {
+  const arcs = ringArcs();
+  return `<div class="mring" data-ref="mring" data-fill="0" data-mult="1" aria-hidden="true">
+      <i class="mring__burst" data-ref="mringBurst"></i>
+      <svg class="mring__svg" data-ref="mringSvg" viewBox="0 0 48 48"><g class="mring__track">${arcs}</g><g class="mring__lit">${arcs}</g></svg>
+      <b class="mring__num" data-ref="mringNum">×1</b>
+    </div>`;
+}
+
+// STAR SLASH rating pops: a fixed pool of small nodes, moved to where the cut happened
+function popMarkup() {
+  let h = '';
+  for (let i = 0; i < POP_COUNT; i++) {
+    h += '<div class="spop" data-rating="perfect"><i class="spop__ring"></i><div class="spop__body"><b class="spop__word">PERFECT</b><span class="spop__pts"></span></div></div>';
+  }
+  return h;
+}
+
 // one player's corner of the play HUD: score, live card (2P only) and combo
 function sideMarkup(p) {
   return `<div class="scorebox scorebox--p${p}" data-player="${p}">
@@ -706,6 +823,7 @@ function sideMarkup(p) {
       <span class="livecard__label">싱크</span>
       <span class="livecard__lost">안 보여요</span>
     </div>
+    ${p === 0 ? mringMarkup() : ''}
     <div class="combo" data-ref="combo${p}">
       <i class="combo__burst" data-ref="comboBurst${p}"></i>
       <b class="combo__num" data-ref="comboNum${p}">0</b>
@@ -789,6 +907,39 @@ const TITLE_ACTIONS = DEMO_ONLY
     + btn('ghost', 'start', `${TWO_SVG}<span>2인 플레이</span><kbd>2</kbd>`, 'btn--duo', 'data-players="2"')
     + btn('ghost', 'startDemo', `${PLAY_SVG}<span>데모 보기 <small>(카메라 없이)</small></span>`, 'btn--sm btn--quiet');
 
+// song picker of the title (both modes): one song per difficulty. One to three shard pips, the
+// song's name, and its difficulty and tempo underneath.
+function songsMarkup() {
+  let h = '<div class="levels songs" style="--i:3" role="radiogroup" aria-label="곡 선택">'; // (no visible label: the plates speak for themselves)
+  SONG_IDS.forEach((id) => {
+    const sg = SONGS[id];
+    let pips = '';
+    for (let k = 0; k <= DIFFICULTIES.indexOf(sg.level); k++) pips += '<i></i>';
+    h += `<button type="button" class="level level--${sg.level}" role="radio" aria-checked="false" data-act="pickSong" data-value="${id}"><span class="level__pips">${pips}</span><span class="level__text"><b>${sg.title}</b><small>${DIFFICULTY_LABELS[sg.level]} · ${sg.bpm} BPM</small></span></button>`;
+  });
+  return h + '<kbd class="levels__key">↑ ↓</kbd></div>';
+}
+
+// the STAR SLASH side of the title: one player with the camera, or the demo (the only button
+// of a demo-only page)
+const SLASH_ACTIONS = (DEMO_ONLY
+  ? btn('primary', 'startDemo', `${PLAY_SVG}<span>데모 보기</span><kbd>SPACE</kbd>`)
+  : btn('primary', 'start', `${SLASH_SVG}<span>슬래시 시작</span><kbd>SPACE</kbd>`, '', 'data-players="1"')
+    + btn('ghost', 'startDemo', `${PLAY_SVG}<span>데모 보기 <small>(카메라 없이)</small></span>`, 'btn--sm btn--quiet'));
+
+// rating-count rows of the STAR SLASH results ("s" keeps their data-refs apart from the dance rows)
+function slashRows() {
+  let h = '';
+  SLASH_ORDER.forEach((r, i) => {
+    h += `<div class="brow" data-rating="${r}" style="--i:${i}">
+      <span class="brow__name">${SLASH_WORDS[r]}</span>
+      <span class="brow__track"><i class="brow__fill" data-ref="sbar-${r}"></i></span>
+      <b class="brow__count" data-ref="scnt-${r}">0</b>
+    </div>`;
+  });
+  return h;
+}
+
 const TEMPLATE = `
 <section class="screen screen--loading" data-name="loading">
   <div class="sky"><i class="sky__stars"></i><i class="sky__stars sky__stars--b"></i><i class="sky__disc"></i></div>
@@ -800,26 +951,39 @@ const TEMPLATE = `
   </div>
 </section>
 
-<section class="screen screen--title" data-name="title">
+<section class="screen screen--title" data-name="title" data-ref="titleSection">
   <div class="title__scrim"></div>
   <div class="title__col">
-    <div class="eyebrow" style="--i:0">${STAR_SVG}<span>NOVA LIVE · 카메라 댄스 스테이지</span></div>
+    <div class="eyebrow" style="--i:0">${STAR_SVG}<span class="pick-dance">NOVA LIVE · 카메라 댄스 스테이지</span><span class="pick-slash">NOVA LIVE · 스타 슬래시</span></div>
     <div class="title__logo" style="--i:1">${logo('')}</div>
     <div class="songcard" style="--i:2">
       <div class="songcard__disc"><span class="eq"><i></i><i></i><i></i><i></i></span></div>
       <div class="songcard__meta">
-        <span class="songcard__label">오늘의 곡</span>
-        <strong class="songcard__title">STARFALL — NOVA · 124 BPM</strong>
-        <span class="songcard__sub">일렉트로 팝 · 1분 35초 · <span data-ref="best">첫 무대에 도전해 보세요</span></span>
+        <span class="songcard__label">선택한 곡</span>
+        <strong class="songcard__title" data-ref="songTitle">STARFALL — NOVA · 124 BPM</strong>
+        <span class="songcard__sub"><span data-ref="songInfo">일렉트로 팝 · 1분 35초</span> · <span data-ref="best">첫 무대에 도전해 보세요</span></span>
       </div>
     </div>
-    <div class="title__actions" style="--i:3">${TITLE_ACTIONS}</div>
-    <p class="title__privacy" style="--i:4">${DEMO_ONLY ? '이 페이지는 데모 버전이에요. NOVA의 무대를 감상해 보세요. 버튼을 누르면 음악이 재생돼요.' : '혼자서도, 둘이서도! 카메라 영상은 이 기기 안에서만 처리되고, 저장되거나 전송되지 않아요.'}</p>
+    ${songsMarkup()}
+    <div class="modeswitch" style="--i:3" role="tablist" aria-label="게임 모드">
+      <i class="modeswitch__thumb"></i>
+      <button type="button" class="modeswitch__tab" role="tab" aria-selected="true" data-act="pickMode" data-value="dance" data-ref="tabDance">${DANCE_SVG}<span>댄스</span></button>
+      <button type="button" class="modeswitch__tab" role="tab" aria-selected="false" data-act="pickMode" data-value="slash" data-ref="tabSlash">${SLASH_SVG}<span>스타 슬래시</span></button>
+      <kbd class="modeswitch__key">TAB</kbd>
+    </div>
+    <div class="title__actions pick-dance" style="--i:4">${TITLE_ACTIONS}</div>
+    <div class="title__actions pick-slash" style="--i:4">${SLASH_ACTIONS}</div>
+    <p class="title__privacy" style="--i:5">${DEMO_ONLY ? '이 페이지는 데모 버전이에요. NOVA의 무대를 감상해 보세요. 버튼을 누르면 음악이 재생돼요.' : '<span class="pick-dance">혼자서도, 둘이서도! </span><span class="pick-slash">혼자 즐기는 모드예요. </span>카메라 영상은 이 기기 안에서만 처리되고, 저장되거나 전송되지 않아요.'}</p>
   </div>
-  <ol class="howto">
-    <li style="--i:5"><canvas data-ref="how0"></canvas><div><em>01</em><strong>상반신이 보이게 1.5~3m</strong><span>머리부터 허리까지 보이면 OK · 전신도 좋아요</span></div></li>
-    <li style="--i:6"><canvas data-ref="how1"></canvas><div><em>02</em><strong>거울처럼 따라하기</strong><span>NOVA가 화면 왼쪽 팔을 움직이면 나도 왼팔!</span></div></li>
-    <li style="--i:7"><canvas data-ref="how2"></canvas><div><em>03</em><strong>보이면 바로 따라 하기</strong><span>조금 늦어도 GOOD · 금빛 스타 무브는 2배</span></div></li>
+  <ol class="howto pick-dance">
+    <li style="--i:6"><canvas data-ref="how0"></canvas><div><em>01</em><strong>상반신이 보이게 1.5~3m</strong><span>머리부터 허리까지 보이면 OK · 전신도 좋아요</span></div></li>
+    <li style="--i:7"><canvas data-ref="how1"></canvas><div><em>02</em><strong>거울처럼 따라하기</strong><span>NOVA가 화면 왼쪽 팔을 움직이면 나도 왼팔!</span></div></li>
+    <li style="--i:8"><canvas data-ref="how2"></canvas><div><em>03</em><strong>보이면 바로 따라 하기</strong><span>조금 늦어도 GOOD · 금빛 스타 무브는 2배</span></div></li>
+  </ol>
+  <ol class="howto pick-slash">
+    <li style="--i:6"><canvas data-ref="sHow0"></canvas><div><em>01</em><strong>손이 화면에 보이게 서기</strong><span>1.5~3m 거리 · 팔을 뻗어도 두 손이 보이게</span></div></li>
+    <li style="--i:7"><canvas data-ref="sHow1"></canvas><div><em>02</em><strong>빛나는 선 방향으로 휘둘러 베기</strong><span>왼손은 청록, 오른손은 금빛 별 조각</span></div></li>
+    <li style="--i:8"><canvas data-ref="sHow2"></canvas><div><em>03</em><strong>콤보를 이어 배수 올리기</strong><span>놓치지 않고 이어 가면 점수가 최대 ×4</span></div></li>
   </ol>
 </section>
 
@@ -848,21 +1012,23 @@ const TEMPLATE = `
     <div class="cam__side">
       <div class="eyebrow">${STAR_SVG}<span>STEP 1 · 카메라 설정</span><i class="modepill" data-ref="camMode">1인 플레이</i></div>
       <h2 class="cam__headline">
-        <span class="cam__h cam__h--search"><span class="only-1p">상반신이 보이게<br>카메라 앞에 서 주세요</span><span class="only-2p">둘이 나란히<br>카메라 앞에 서 주세요</span></span>
+        <span class="cam__h cam__h--search"><span class="only-1p only-dance">상반신이 보이게<br>카메라 앞에 서 주세요</span><span class="only-2p only-dance">둘이 나란히<br>카메라 앞에 서 주세요</span><span class="only-slash">두 손이 화면 안에<br>들어오게 서 주세요</span></span>
         <span class="cam__h cam__h--ready">좋아요!<br>그대로 계세요</span>
         <span class="cam__h cam__h--error">카메라 없이도<br>즐길 수 있어요</span>
       </h2>
       <p class="cam__status" data-ref="camStatus">${CAMERA_STATUS.requesting}</p>
       <div class="meter">
-        <div class="meter__head"><span>상반신 인식</span><b data-ref="meterPct">0%</b></div>
+        <div class="meter__head"><span><span class="only-dance">상반신 인식</span><span class="only-slash">손 · 상반신 인식</span></span><b data-ref="meterPct">0%</b></div>
         <div class="meter__track"><div class="meter__fill" data-ref="meterFill"></div><i class="meter__goal" data-ref="meterGoal"></i></div>
       </div>
       <div class="pchips">${chipMarkup(0)}${chipMarkup(1)}</div>
       <ul class="cam__tips">
         <li>${STAR_SVG}카메라에서 1.5~3m 떨어지기</li>
-        <li>${STAR_SVG}상반신이 화면에 보이면 준비 완료</li>
-        <li class="only-1p">${STAR_SVG}전신이 보이면 더 좋아요 · 밝은 곳에서</li>
-        <li class="only-2p">${STAR_SVG}P1은 왼쪽, P2는 오른쪽 · 팔 간격 넉넉히</li>
+        <li class="only-dance">${STAR_SVG}상반신이 화면에 보이면 준비 완료</li>
+        <li class="only-1p only-dance">${STAR_SVG}전신이 보이면 더 좋아요 · 밝은 곳에서</li>
+        <li class="only-2p only-dance">${STAR_SVG}P1은 왼쪽, P2는 오른쪽 · 팔 간격 넉넉히</li>
+        <li class="only-slash">${STAR_SVG}팔을 뻗어도 두 손이 보이면 준비 완료</li>
+        <li class="only-slash"><i class="handdot"></i>왼손은 청록 · <i class="handdot handdot--r"></i>오른손은 금빛으로 표시돼요</li>
       </ul>
       <div class="cam__actions">
         ${btn('ghost', 'skipCamera', '<span>바로 시작</span>', 'btn--sm cam__skip')}
@@ -880,7 +1046,7 @@ const TEMPLATE = `
   <div class="songbar">
     <div class="songbar__row">
       <div class="chip" data-ref="sectionChip"><i class="chip__dot"></i><span data-ref="sectionText">인트로</span></div>
-      <span class="songbar__title">STARFALL — NOVA</span>
+      <span class="songbar__title"><span class="only-dance" data-ref="barDance">STARFALL — NOVA</span><span class="only-slash" data-ref="barSlash">STAR SLASH · STARFALL</span></span>
       <button type="button" class="pausebtn" data-act="pause" aria-label="일시정지"><i></i><i></i></button>
     </div>
     <div class="progress">
@@ -892,13 +1058,19 @@ const TEMPLATE = `
     <div class="tile__view">
       <canvas class="tile__canvas" data-ref="tileCanvas"></canvas>
       <span class="tile__tag"><b data-ref="tileTag">나</b><i class="tile__live">LIVE</i></span>
-      <span class="tile__warn">상반신이 보이게 서 주세요</span>
+      <span class="tile__warn"><span class="only-dance">상반신이 보이게 서 주세요</span><span class="only-slash">화면 안으로 들어와 주세요</span></span>
+      <span class="tile__off"><b>카메라 꺼짐</b><i>카메라를 켜면 여기에<br>내 모습이 나와요</i></span>
     </div>
     <div class="tile__sync">
       <span class="tile__synclabel">싱크</span>
       <span class="tile__meterbox"><canvas class="tile__meter" data-ref="tileMeter"></canvas></span>
     </div>
     <ul class="legend" aria-hidden="true"><li class="legend__hit">맞음</li><li class="legend__near">거의</li><li class="legend__off">다름</li></ul>
+    <div class="sacc">
+      <span class="sacc__label">정확도</span>
+      <b class="sacc__num" data-ref="saccNum">—</b>
+      <span class="sacc__bar"><i data-ref="saccFill"></i></span>
+    </div>
   </div>
   ${pcamMarkup(0)}
   ${pcamMarkup(1)}
@@ -910,13 +1082,15 @@ const TEMPLATE = `
     <span class="lane__label">NEXT</span>
     <canvas class="lane__canvas" data-ref="laneCanvas"></canvas>
   </div>
+  <div class="spops" aria-hidden="true">${popMarkup()}</div>
+  <div class="shint"><div class="shint__plate" data-ref="shint">${SLASH_SVG}<span>${SLASH_HINT}</span></div></div>
 </section>
 
 <section class="screen screen--countdown" data-name="countdown">
   <div class="count">
     <div class="count__ring" data-ref="countRing"></div>
     <div class="count__num" data-ref="countNum">3</div>
-    <p class="count__hint"><span class="only-1p">NOVA를 거울처럼 따라 하세요</span><span class="only-2p">P1 왼쪽 · P2 오른쪽 · NOVA를 거울처럼!</span></p>
+    <p class="count__hint"><span class="only-1p only-dance">NOVA를 거울처럼 따라 하세요</span><span class="only-2p only-dance">P1 왼쪽 · P2 오른쪽 · NOVA를 거울처럼!</span><span class="only-slash">${SLASH_HINT}</span></p>
   </div>
 </section>
 
@@ -938,14 +1112,18 @@ const TEMPLATE = `
     <div class="eyebrow">${STAR_SVG}<span data-ref="resEyebrow">STAGE CLEAR · STARFALL — NOVA</span></div>
     <h2 class="results__title" data-ref="resTitle">빛나는 무대</h2>
     <p class="results__sub" data-ref="resSub"></p>
-    <div class="stars" data-ref="stars">${starSlots()}</div>
+    <div class="hero">
+      <div class="rank" data-ref="rank" data-rank="S"><i class="rank__gem"></i><i class="rank__cut"></i><b class="rank__letter" data-ref="rankLetter">S</b><span class="rank__label">RANK</span></div>
+      <div class="stars" data-ref="stars">${starSlots()}</div>
+    </div>
     <div class="results__score">
       <span class="results__scorelabel">SCORE</span>
       <b class="results__scorenum" data-ref="resScore">0</b>
       <span class="results__best"><i class="results__new" data-ref="resNew">신기록!</i><span data-ref="resBest">최고 기록 0</span></span>
     </div>
     <div class="results__grid">
-      <div class="breakdown">${breakdownRows('')}</div>
+      <div class="breakdown only-dance">${breakdownRows('')}</div>
+      <div class="breakdown breakdown--slash only-slash">${slashRows()}</div>
       <div class="statcol">
         <div class="stat"><span>최대 콤보</span><b data-ref="resCombo">0</b></div>
         <div class="stat"><span>정확도</span><b data-ref="resAcc">0%</b><span class="stat__bar"><i data-ref="resAccBar"></i></span></div>
@@ -1007,13 +1185,19 @@ const FLY_ARRIVE_MS = 560;
  *                      long enough to see for yourself how the camera frames you)
  *   beatsAhead         how many beats of upcoming moves the lane shows (default 7)
  *   maxDpr             canvas pixel-ratio cap (default 2)
- *   keyboard           false disables the built-in Space/Enter/2/Esc handling
+ *   keyboard           false disables the built-in Space/Enter/Tab/arrows/1/2/3/Esc handling
+ *   mode               'dance' (default) | 'slash': initial game mode; setMode() / showScreen(name, { mode }) change it
+ *   maxMultiplier      STAR SLASH: the multiplier at which the ring is shown full (default 4)
+ *   hintMs             STAR SLASH: how long the how-to line stays up at the start of a run (default 7000, 0 = never)
  */
 export function createHud(root, options) {
   if (!root) throw new Error('createHud(root): root element is required');
 
   const cfg = Object.assign(
-    { players: 1, landmarksMirrored: true, readyThreshold: 0.7, readyHoldMs: 2600, beatsAhead: 7, maxDpr: 2, keyboard: true },
+    {
+      players: 1, landmarksMirrored: true, readyThreshold: 0.7, readyHoldMs: 2600, beatsAhead: 7, maxDpr: 2, keyboard: true,
+      mode: '', maxMultiplier: 4, hintMs: 7000,
+    },
     options || {},
   );
 
@@ -1034,7 +1218,25 @@ export function createHud(root, options) {
   let best = readBest();
   let playerCount = cfg.players === 2 ? 2 : 1;
   let layoutPlayers = 0; // the player count the canvases were last laid out for
+
+  // Game mode. `mode` is what the run screens (camera, countdown, play, pause, results) are laid
+  // out for; it becomes 'slash' only when the game says so. `pick` is the title's mode switch and
+  // `song` its song picker (each song is one difficulty, `level`, which is the STAR SLASH chart):
+  // both are remembered between visits, and both travel in the start / startDemo events.
+  let mode = cfg.mode === 'slash' ? 'slash' : 'dance';
+  let pick = cfg.mode === 'slash' || cfg.mode === 'dance' ? mode : readStored(MODE_KEY) === 'slash' ? 'slash' : 'dance';
+  let song = SONGS[cfg.song] ? cfg.song : readStored(SONG_KEY);
+  if (!SONGS[song]) song = DEFAULT_SONG;
+  let level = SONGS[song].level;
+  best = readBest(songBestKey(song));
+  let layoutMode = ''; // the mode the canvases were last laid out for
+  const slashBest = {};
+  for (const d of DIFFICULTIES) slashBest[d] = readStoredScore(SLASH_BEST_KEY + d);
+  if (mode === 'slash') playerCount = 1; // STAR SLASH is a one-player mode
+
   root.setAttribute('data-players', String(playerCount));
+  root.setAttribute('data-mode', mode);
+  root.setAttribute('data-pick', pick);
 
   // ---- events -------------------------------------------------------------
 
@@ -1118,6 +1320,33 @@ export function createHud(root, options) {
       { opacity: 0.9, transform: 'scale(0.55)' },
       { opacity: 0, transform: 'scale(1.5)' },
     ], { duration: 900, easing: 'cubic-bezier(.1,.7,.2,1)', fill: 'both' }),
+    // STAR SLASH: the multiplier ring ticks on every hit, pops when it steps up, shudders when
+    // the streak is lost; the how-to line rises, stays for the first seconds, and leaves
+    mringTick: makeAnim(refs.mringSvg, [
+      { transform: 'scale(1.1)' },
+      { transform: 'scale(1)' },
+    ], { duration: 190, easing: 'cubic-bezier(.2,.9,.3,1)' }),
+    mringUp: makeAnim(refs.mringNum, [
+      { transform: 'scale(1.9) rotate(-8deg)' },
+      { transform: 'scale(0.9) rotate(0deg)', offset: 0.55 },
+      { transform: 'scale(1) rotate(0deg)' },
+    ], { duration: 340, easing: 'cubic-bezier(.2,.9,.3,1)' }),
+    mringBurst: makeAnim(refs.mringBurst, [
+      { opacity: 0.95, transform: 'scale(0.6)' },
+      { opacity: 0, transform: 'scale(2)' },
+    ], { duration: 480, easing: 'cubic-bezier(.1,.7,.2,1)' }),
+    mringDrop: makeAnim(refs.mring, [
+      { opacity: 1, transform: 'translateX(0%)' },
+      { opacity: 0.45, transform: 'translateX(-7%)', offset: 0.22 },
+      { opacity: 0.6, transform: 'translateX(5%)', offset: 0.5 },
+      { opacity: 1, transform: 'translateX(0%)' },
+    ], { duration: 360, easing: 'ease-out' }),
+    hint: makeAnim(refs.shint, [
+      { opacity: 0, transform: 'translateY(60%)', easing: 'cubic-bezier(.2,.9,.2,1)' },
+      { opacity: 1, transform: 'translateY(0%)', offset: 0.07 },
+      { opacity: 1, transform: 'translateY(0%)', offset: 0.9, easing: 'ease-in' },
+      { opacity: 0, transform: 'translateY(-30%)' },
+    ], { duration: cfg.hintMs > 0 ? +cfg.hintMs : 7000, easing: 'linear' }),
   };
 
   // ---- per-player state ------------------------------------------------------
@@ -1786,6 +2015,7 @@ export function createHud(root, options) {
   const GUIDE_OPTS = { color: '#bfb4ff', accent: '#bfb4ff', outline: 'rgba(11,6,32,0.2)', alpha: 0.2 };
   const GHOST_OPTS = { color: 'rgba(190,180,255,0.4)', accent: 'rgba(190,180,255,0.4)', outline: 'rgba(11,6,32,0.55)' };
   const CAM_FIG_OPTS = [{ color: C_WHITE, accent: C_TEAL }, { color: C_WHITE, accent: C_CORAL }];
+  const SLASH_FIG_OPTS = { color: C_SLASH_BONE, accent: C_SLASH_BONE };
 
   function isLive(video) {
     return !!video && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0;
@@ -2055,6 +2285,67 @@ export function createHud(root, options) {
     VS[V_HEAD_R] = headR;
   }
 
+  // STAR SLASH: one mark per hand in that hand's colour (screen-left teal, screen-right amber),
+  // so players see at a glance that both hands are in the picture and which is which.
+  // Position and radius of the mark painted next sit in a typed slot: a non-integer number
+  // handed to a function as an argument would be boxed on every call.
+  const HM = new Float64Array(3);
+  const HM_X = 0;
+  const HM_Y = 1;
+  const HM_R = 2;
+
+  function handMark(ctx, color) {
+    const x = HM[HM_X];
+    const y = HM[HM_Y];
+    const r = HM[HM_R];
+    ctx.globalAlpha = 0.3;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, y, r * 2, 0, 6.283185307179586);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = 'rgba(11,6,32,0.85)';
+    ctx.beginPath();
+    ctx.arc(x, y, r * 1.22, 0, 6.283185307179586);
+    ctx.fill();
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, 6.283185307179586);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(x, y, r * 0.42, 0, 6.283185307179586);
+    ctx.fill();
+  }
+
+  // Over the landmarks projected last: the palm is read as wrist + 0.35 x (wrist - elbow), the
+  // same point the game's hand reader uses. MediaPipe LEFT_* are the screen-left limbs.
+  // big = 1 on the camera screen (large view, smaller marks), 0 on the play panel.
+  function paintHands(v, big) {
+    const ctx = v.ctx;
+    HM[HM_R] = Math.max(3, v.W * (big ? 0.02 : 0.036));
+    for (let h = 0; h < 2; h++) {
+      const wi = 15 + h;
+      const ei = 13 + h;
+      if (LM_VIS[wi] < LM_MIN_VIS) continue;
+      const k = LM_VIS[ei] < LM_MIN_VIS ? 0 : 0.35;
+      HM[HM_X] = LM_XY[wi * 2] + (LM_XY[wi * 2] - LM_XY[ei * 2]) * k;
+      HM[HM_Y] = LM_XY[wi * 2 + 1] + (LM_XY[wi * 2 + 1] - LM_XY[ei * 2 + 1]) * k;
+      handMark(ctx, HAND_COLORS[h]);
+    }
+  }
+
+  // Over the figure drawn last (J still holds its joints in canvas pixels).
+  function paintFigureHands(v, big) {
+    HM[HM_R] = Math.max(3, v.W * (big ? 0.02 : 0.036));
+    HM[HM_X] = J[J_LWR * 2];
+    HM[HM_Y] = J[J_LWR * 2 + 1];
+    handMark(v.ctx, HAND_COLORS[0]);
+    HM[HM_X] = J[J_RWR * 2];
+    HM[HM_Y] = J[J_RWR * 2 + 1];
+    handMark(v.ctx, HAND_COLORS[1]);
+  }
+
   // "P1" / "P2" plate above a head on the 2P camera screen
   function paintTag(v, text, color, x, y) {
     const ctx = v.ctx;
@@ -2199,6 +2490,7 @@ export function createHud(root, options) {
   const CAM_STATES = ['requesting', 'searching', 'almost', 'ready', 'go'];
 
   function camStatusText() {
+    if (mode === 'slash') return CAMERA_STATUS_SLASH[camState] || '';
     if (playerCount !== 2) return CAMERA_STATUS[camState] || '';
     if (camState === 'almost') {
       if (camP[0].ready && !camP[1].ready) return WAITING_TEXT[1];
@@ -2209,7 +2501,8 @@ export function createHud(root, options) {
 
   // the status line only changes when the overall state or a player's status changes
   function refreshCamStatus(force) {
-    const key = CAM_STATES.indexOf(camState) * 100 + (camP[0].ready ? 10 : 0) + (camP[1].ready ? 1 : 0) + playerCount * 1000;
+    const key = CAM_STATES.indexOf(camState) * 100 + (camP[0].ready ? 10 : 0) + (camP[1].ready ? 1 : 0) + playerCount * 1000
+      + (mode === 'slash' ? 10000 : 0);
     if (key === camMsgKey && !force) return;
     camMsgKey = key;
     refs.camStatus.textContent = camStatusText();
@@ -2258,7 +2551,7 @@ export function createHud(root, options) {
     if (camFired) return;
     camFired = true;
     setCamState('go');
-    emit('cameraReady', { players: playerCount });
+    emit('cameraReady', { players: playerCount, mode });
   }
 
   // 0 nobody / 1 partly in frame / 2 standing in the other player's half / 3 ready
@@ -2307,6 +2600,24 @@ export function createHud(root, options) {
     }
   }
 
+  // STAR SLASH camera setup (always one player): neutral skeleton, a mark on each hand, and a
+  // guide figure that holds both hands up where they have to be seen
+  function paintCamSlash(res) {
+    const v = camView;
+    const ctx = v.ctx;
+    const lms = res ? res.landmarks : null;
+    if (lms && lms.length >= 29) {
+      projectLandmarks(v, lms);
+      paintSkeleton(v, true, null, camUp[0] < UPPER_LOW ? C_CORAL : C_SLASH_BONE);
+      paintHands(v, 1);
+    } else if (res && res.pose) {
+      drawPictogram(ctx, res.pose, v.cx, v.cy, v.figS, camUp[0] < UPPER_LOW ? PLAYER_LOW_OPTS : SLASH_FIG_OPTS);
+      paintFigureHands(v, 1);
+    } else {
+      drawPictogram(ctx, DECO.guard, v.W * 0.5, v.H * 0.656, v.H * 1.88, GUIDE_OPTS);
+    }
+  }
+
   function updateCameraScreen(video, r0, r1) {
     const now = performance.now();
     const dt = CAMT[C_LAST] ? Math.min(100, now - CAMT[C_LAST]) : 16;
@@ -2319,8 +2630,12 @@ export function createHud(root, options) {
     let live = false;
     if (camView.ok) {
       live = paintBackdrop(camView, video);
-      paintCamPlayer(0, r0, n);
-      if (n === 2) paintCamPlayer(1, r1, n);
+      if (mode === 'slash') {
+        paintCamSlash(r0);
+      } else {
+        paintCamPlayer(0, r0, n);
+        if (n === 2) paintCamPlayer(1, r1, n);
+      }
     } else {
       live = isLive(video);
     }
@@ -2379,6 +2694,7 @@ export function createHud(root, options) {
   let tileDemo = null;
   let tileWarn = false;
   let tileLowSince = 0;
+  let tileEmpty = false; // STAR SLASH without a camera and without a figure: the panel explains itself
 
   function updateTile(video, res) {
     const ui = PU[0];
@@ -2423,6 +2739,67 @@ export function createHud(root, options) {
       tileDemo = demo;
       refs.tileTag.textContent = demo ? 'DEMO' : '나';
       refs.tile.classList.toggle('is-demo', demo);
+    }
+    let warn = false;
+    if (live && up < UPPER_LOW) {
+      if (!tileLowSince) tileLowSince = now;
+      warn = now - tileLowSince > 700;
+    } else {
+      tileLowSince = 0;
+    }
+    if (warn !== tileWarn) {
+      tileWarn = warn;
+      refs.tile.classList.toggle('is-warn', warn);
+    }
+  }
+
+  // STAR SLASH uses the same panel, smaller: no match colours and no sync meter (there is no pose
+  // to copy), a neutral skeleton and one mark per hand in the hand colours. Its own function, so
+  // that the dance panel above stays exactly the code it was.
+  function updateTileSlash(video, res) {
+    const now = performance.now();
+    let live = false;
+    let up = 1;
+
+    if (tileView.ok) {
+      const v = tileView;
+      live = paintBackdrop(v, video);
+      if (res) {
+        measureUpper(res);
+        up = RET[0];
+      } else if (live) {
+        up = 0;
+      }
+      const lms = res ? res.landmarks : null;
+      if (lms && lms.length >= 29) {
+        projectLandmarks(v, lms);
+        paintSkeleton(v, false, null, up < UPPER_LOW ? C_CORAL : C_SLASH_BONE);
+        paintHands(v, 0);
+      } else if (res && res.pose) {
+        drawPictogram(v.ctx, res.pose, v.cx, v.cy, v.figS, up < UPPER_LOW ? PLAYER_LOW_OPTS : SLASH_FIG_OPTS);
+        paintFigureHands(v, 0);
+      }
+    } else {
+      live = isLive(video);
+      if (res) {
+        measureUpper(res);
+        up = RET[0];
+      } else if (live) {
+        up = 0;
+      }
+    }
+
+    const demo = !live;
+    if (demo !== tileDemo) {
+      tileDemo = demo;
+      refs.tileTag.textContent = demo ? 'DEMO' : '나';
+      refs.tile.classList.toggle('is-demo', demo);
+    }
+    // no camera and no figure to draw: the panel says what it is for
+    const empty = demo && !(res && (res.pose || res.landmarks));
+    if (empty !== tileEmpty) {
+      tileEmpty = empty;
+      refs.tile.classList.toggle('is-empty', empty);
     }
     let warn = false;
     if (live && up < UPPER_LOW) {
@@ -2544,6 +2921,8 @@ export function createHud(root, options) {
         updateCard(PU[1], r1);
         updatePcam(PU[0], videoEl, r0);
         updatePcam(PU[1], videoEl, r1);
+      } else if (mode === 'slash') {
+        updateTileSlash(videoEl, r0);
       } else {
         updateTile(videoEl, r0);
       }
@@ -2630,6 +3009,154 @@ export function createHud(root, options) {
         drawPictogram(g, DECO.hips, W / 2 + H * 0.05, H / 2, H * 0.66, GOLD_OPTS);
       }
     }
+    drawHowtoSlash();
+  }
+
+  // a glowing dot (how-to icons only: shadows are fine here, nothing of this runs per frame)
+  function glowDot(g, x, y, r, color) {
+    g.save();
+    g.shadowColor = color;
+    g.shadowBlur = r * 2.4;
+    g.fillStyle = color;
+    g.beginPath();
+    g.arc(x, y, r, 0, 6.283185307179586);
+    g.fill();
+    g.restore();
+    g.fillStyle = '#ffffff';
+    g.beginPath();
+    g.arc(x, y, r * 0.45, 0, 6.283185307179586);
+    g.fill();
+  }
+
+  // the outline of a star shard: a five-sided crystal standing on its narrow end
+  function shardPath(g, cx, cy, r) {
+    g.beginPath();
+    g.moveTo(cx, cy - r);
+    g.lineTo(cx + r * 0.82, cy - r * 0.34);
+    g.lineTo(cx + r * 0.46, cy + r);
+    g.lineTo(cx - r * 0.46, cy + r);
+    g.lineTo(cx - r * 0.82, cy - r * 0.34);
+    g.closePath();
+  }
+
+  // The three how-to icons of the STAR SLASH side of the title (drawn only while that side is
+  // showing: a hidden canvas has no size).
+  function drawHowtoSlash() {
+    for (let n = 0; n < 3; n++) {
+      const c = refs['sHow' + n];
+      if (!sizeCanvas(c)) continue;
+      const g = c.getContext('2d');
+      const W = c.width;
+      const H = c.height;
+      g.clearRect(0, 0, W, H);
+      g.lineCap = 'round';
+      g.lineJoin = 'round';
+      if (n === 0) {
+        // both hands inside the viewfinder, each marked in its own colour
+        const m = H * 0.1;
+        const k = H * 0.2;
+        g.save();
+        g.beginPath();
+        g.rect(m, m, W - m * 2, H - m * 2);
+        g.clip();
+        drawPictogram(g, DECO.guard, W / 2, H * 0.66, H * 1.4, HOWTO_DIM_OPTS);
+        g.restore();
+        const lx = J[J_LWR * 2];
+        const ly = J[J_LWR * 2 + 1];
+        const rx = J[J_RWR * 2];
+        const ry = J[J_RWR * 2 + 1];
+        glowDot(g, lx, ly, H * 0.075, HAND_COLORS[0]);
+        glowDot(g, rx, ry, H * 0.075, HAND_COLORS[1]);
+        g.strokeStyle = C_TEAL;
+        g.lineWidth = Math.max(2, H * 0.045);
+        g.beginPath();
+        g.moveTo(m, m + k); g.lineTo(m, m); g.lineTo(m + k, m);
+        g.moveTo(W - m - k, m); g.lineTo(W - m, m); g.lineTo(W - m, m + k);
+        g.moveTo(W - m, H - m - k); g.lineTo(W - m, H - m); g.lineTo(W - m - k, H - m);
+        g.moveTo(m + k, H - m); g.lineTo(m, H - m); g.lineTo(m, H - m - k);
+        g.stroke();
+      } else if (n === 1) {
+        // a star shard with its cut line, and the hand's comet trail sweeping along that line
+        const cx = W * 0.5;
+        const cy = H * 0.5;
+        const r = H * 0.33;
+        const ux = 0.86; // direction of the cut: up and to the right
+        const uy = -0.5;
+        const body = g.createLinearGradient(cx - r, cy - r, cx + r, cy + r);
+        body.addColorStop(0, 'rgba(169,139,255,0.95)');
+        body.addColorStop(0.55, 'rgba(74,43,168,0.95)');
+        body.addColorStop(1, 'rgba(26,15,74,0.95)');
+        shardPath(g, cx, cy, r);
+        g.fillStyle = body;
+        g.fill();
+        // facets
+        g.strokeStyle = 'rgba(246,241,255,0.3)';
+        g.lineWidth = Math.max(1, H * 0.014);
+        g.beginPath();
+        g.moveTo(cx, cy - r); g.lineTo(cx - r * 0.2, cy + r * 0.1); g.lineTo(cx - r * 0.46, cy + r);
+        g.moveTo(cx - r * 0.2, cy + r * 0.1); g.lineTo(cx - r * 0.82, cy - r * 0.34);
+        g.moveTo(cx, cy - r); g.lineTo(cx + r * 0.3, cy + r * 0.2); g.lineTo(cx + r * 0.46, cy + r);
+        g.moveTo(cx + r * 0.3, cy + r * 0.2); g.lineTo(cx + r * 0.82, cy - r * 0.34);
+        g.stroke();
+        shardPath(g, cx, cy, r);
+        g.strokeStyle = 'rgba(207,198,255,0.9)';
+        g.lineWidth = Math.max(1.5, H * 0.026);
+        g.stroke();
+        // comet trail: three passes, wide and faint to thin and bright, ending in the head
+        const tx = cx + ux * r * 1.3;
+        const ty = cy + uy * r * 1.3;
+        const sx = cx - ux * r * 1.3;
+        const sy = cy - uy * r * 1.3;
+        for (let pass = 0; pass < 3; pass++) {
+          g.strokeStyle = pass === 2 ? '#eafffd' : C_TEAL;
+          g.globalAlpha = pass === 0 ? 0.22 : pass === 1 ? 0.55 : 1;
+          g.lineWidth = H * (pass === 0 ? 0.13 : pass === 1 ? 0.07 : 0.03);
+          g.beginPath();
+          g.moveTo(W * 0.06 + pass * H * 0.05, H * 0.93 - pass * H * 0.03);
+          g.quadraticCurveTo(sx - H * 0.05, sy + H * 0.12, sx, sy);
+          g.lineTo(tx, ty);
+          g.stroke();
+        }
+        g.globalAlpha = 1;
+        glowDot(g, tx, ty, H * 0.07, C_TEAL);
+        // the cut line itself, on the face of the shard, with a chevron pointing the way
+        g.save();
+        g.shadowColor = '#ffffff';
+        g.shadowBlur = H * 0.08;
+        g.strokeStyle = '#ffffff';
+        g.lineWidth = Math.max(2, H * 0.036);
+        g.beginPath();
+        g.moveTo(cx - ux * r * 0.62, cy - uy * r * 0.62);
+        g.lineTo(cx + ux * r * 0.62, cy + uy * r * 0.62);
+        g.stroke();
+        g.restore();
+      } else {
+        // the multiplier ring: five of eight hits done, x3 in the middle
+        const cx = W / 2;
+        const cy = H / 2;
+        const r = H * 0.35;
+        const step = 6.283185307179586 / MRING_STEPS;
+        g.lineWidth = Math.max(2, H * 0.085);
+        for (let i = 0; i < MRING_STEPS; i++) {
+          const lit = i < 5;
+          g.save();
+          if (lit) {
+            g.shadowColor = C_GOLD;
+            g.shadowBlur = H * 0.09;
+          }
+          g.strokeStyle = lit ? C_GOLD : 'rgba(246,241,255,0.22)';
+          g.beginPath();
+          g.arc(cx, cy, r, -1.5707963267948966 + i * step + 0.13, -1.5707963267948966 + (i + 1) * step - 0.13);
+          g.stroke();
+          g.restore();
+        }
+        g.fillStyle = '#fff3c4';
+        g.font = '900 ' + Math.round(H * 0.27) + 'px ' + FONT_DISPLAY;
+        g.textAlign = 'center';
+        g.textBaseline = 'middle';
+        g.fillText('×3', cx, cy + H * 0.02);
+      }
+    }
   }
 
   // CSS sizes the burst box and its biggest word in --u; keep these two in step with css/style.css
@@ -2696,8 +3223,26 @@ export function createHud(root, options) {
   }
 
   function canvasesReady() {
-    if (!L.ok || !camView.ok || !fig.ok || layoutPlayers !== playerCount) return false;
+    if (!camView.ok || !fig.ok || layoutPlayers !== playerCount || layoutMode !== mode) return false;
+    if (mode === 'slash') return tileView.ok; // no lane and no sync meter in STAR SLASH
+    if (!L.ok) return false;
     return playerCount === 2 ? PU[0].cardView.ok && PU[1].cardView.ok : tileView.ok && tileMeterView.ok;
+  }
+
+  // Where a STAR SLASH pop may be centred so that it never leaves the screen. Measured at
+  // layout time; slashPop() only reads these numbers.
+  const popBox = { w: 0, h: 0, minX: 0, maxX: 0, minY: 0, maxY: 0 };
+
+  function layoutPops() {
+    const w = +root.clientWidth || 0;
+    const h = +root.clientHeight || 0;
+    const u = Math.min(w / 100, h / 56.25); // the CSS unit --u in pixels
+    popBox.w = w;
+    popBox.h = h;
+    popBox.minX = u * 5.5;
+    popBox.maxX = w - u * 5.5;
+    popBox.minY = u * 6.5;
+    popBox.maxY = h - u * 1.5;
   }
 
   function layout() {
@@ -2713,7 +3258,9 @@ export function createHud(root, options) {
     drawHowto();
     fitRatingWord();
     layoutPlayGeometry();
+    layoutPops();
     layoutPlayers = playerCount;
+    layoutMode = mode;
   }
 
   let layoutQueued = false;
@@ -2780,9 +3327,8 @@ export function createHud(root, options) {
     ui.lastCombo = c;
   }
 
-  /** setScore(score, combo, multiplier, player = 0) */
-  function setScore(score, combo, multiplier, player) {
-    const ui = playerUi(player);
+  // the rolling digits of one player's score
+  function applyDigits(ui, score) {
     let s = Math.round(+score || 0);
     if (s < 0) s = 0;
     if (s > 9999999) s = 9999999;
@@ -2803,7 +3349,16 @@ export function createHud(root, options) {
       if (s > ui.lastScore && performance.now() > ui.flyUntil) replay(ui.a.score);
       ui.lastScore = s;
     }
+  }
 
+  /**
+   * setScore(score, combo, multiplier, player = 0)
+   * In STAR SLASH this also works (score, combo and the number inside the multiplier ring);
+   * setSlashScore() additionally carries the accuracy and the progress toward the next step.
+   */
+  function setScore(score, combo, multiplier, player) {
+    const ui = playerUi(player);
+    applyDigits(ui, score);
     applyCombo(ui, combo);
 
     const m = multiplier == null ? 1 : Math.round(+multiplier * 100) / 100;
@@ -2812,6 +3367,217 @@ export function createHud(root, options) {
       ui.mult = m;
       ui.comboMult.textContent = '×' + fmtMult(m);
       ui.comboMult.classList.toggle('is-boost', m > 1.001);
+    }
+    if (mode === 'slash' && ui === PU[0]) applySlashMult(multiplier, null);
+  }
+
+  // ---- STAR SLASH: score line, multiplier ring, accuracy, rating pops ---------------------
+
+  // what is on screen right now, as integers: every write below is guarded by a comparison
+  const SL = {
+    multQ: 0, // multiplier x 100 (0 = nothing shown yet)
+    tier: -1, // 1..4: the ring's colour step
+    fill: -1, // lit segments of the ring, 0..MRING_STEPS
+    maxed: false,
+    accQ: -2, // accuracy in whole percent, -1 = no value yet
+  };
+
+  // -- a shown value changed (these run when a number on screen changes, never every frame) --
+
+  // the number in the ring (x1 .. x4), its colour step, the glow of the top multiplier, and the
+  // step animations: a pop and a burst on the way up, a shudder when the streak is lost
+  function showSlashMult(mq) {
+    const prev = SL.multQ;
+    SL.multQ = mq;
+    PU[0].mult = mq / 100;
+    refs.mringNum.textContent = mq % 100 === 0 && mq < 1000 ? MULT_TEXT[mq / 100] : '×' + fmtMult(mq / 100);
+    let tier = (mq / 100) | 0;
+    if (tier > 4) tier = 4;
+    if (tier !== SL.tier) {
+      SL.tier = tier;
+      refs.mring.setAttribute('data-mult', DIGIT_TEXT[tier]);
+    }
+    const maxed = mq >= cfg.maxMultiplier * 100;
+    if (maxed !== SL.maxed) {
+      SL.maxed = maxed;
+      refs.mring.classList.toggle('is-max', maxed);
+    }
+    if (prev > 0) {
+      if (mq > prev) {
+        replay(anims.mringUp);
+        replay(anims.mringBurst);
+      } else {
+        replay(anims.mringDrop);
+      }
+    }
+  }
+
+  // how many segments of the ring are lit; a segment lighting up inside a step ticks the ring
+  function showSlashFill(f, tick) {
+    const grew = tick && f > SL.fill && SL.fill >= 0;
+    SL.fill = f;
+    refs.mring.setAttribute('data-fill', DIGIT_TEXT[f]);
+    if (grew) replay(anims.mringTick);
+  }
+
+  // live accuracy in whole percent; -1 = nothing judged yet, shown as a dash
+  function showSlashAcc(q) {
+    SL.accQ = q;
+    refs.saccNum.textContent = q < 0 ? '—' : PCT[q];
+    refs.saccFill.style.transform = SCALE_X[q < 0 ? 0 : q];
+  }
+
+  // -- safe every frame: quantise, compare with what is shown, and only then show --
+
+  // progress01: 0..1 toward the next step; null = not given (keep what is lit)
+  function applySlashMult(multiplier, progress01) {
+    let m = multiplier == null ? 1 : +multiplier;
+    if (!(m >= 1)) m = 1;
+    if (m > 99) m = 99;
+    const mq = Math.round(m * 100);
+    const stepped = mq !== SL.multQ;
+    if (stepped) showSlashMult(mq);
+    let f = SL.fill;
+    if (SL.maxed) f = MRING_STEPS; // nothing left to climb: the ring stays full
+    else if (progress01 != null) f = (clamp01(+progress01 || 0) * MRING_STEPS + 0.5) | 0;
+    else if (stepped || f < 0) f = 0; // a new step starts empty
+    if (f !== SL.fill) showSlashFill(f, !stepped);
+  }
+
+  // nothing judged yet (null, NaN or 0) shows a dash
+  function applySlashAcc(accuracy01) {
+    let q = -1;
+    if (accuracy01 != null) {
+      let a = +accuracy01;
+      if (a > 1.0001) a /= 100;
+      if (a > 0) q = (clamp01(a) * 100 + 0.5) | 0;
+    }
+    if (q !== SL.accQ) showSlashAcc(q);
+  }
+
+  /**
+   * setSlashScore(score, combo, multiplier, accuracy01, multProgress01)   (STAR SLASH, one player)
+   *   multiplier      1 .. 4 (the number inside the ring)
+   *   accuracy01      0..1 (0..100 is accepted too); null / 0 = nothing judged yet, shown as a dash
+   *   multProgress01  0..1 progress toward the next multiplier step: lights the ring's eight
+   *                   segments; omitted = keep what is shown. At the top multiplier the ring is full.
+   * Safe to call every frame: it only touches the DOM when a shown value changes.
+   */
+  function setSlashScore(score, combo, multiplier, accuracy01, multProgress01) {
+    const ui = PU[0];
+    applyDigits(ui, score);
+    const c = Math.max(0, Math.round(+combo || 0));
+    if (c !== ui.lastCombo) applyCombo(ui, c);
+    applySlashMult(multiplier, multProgress01 === undefined ? null : multProgress01);
+    applySlashAcc(accuracy01);
+  }
+
+  // The pool. Each pop is an anchor moved to the cut (transform only) and a body that plays one
+  // of three short motions; the centring translate lives in the keyframes.
+  const pops = Array.prototype.map.call(root.querySelectorAll('.spop'), (el) => {
+    const body = el.querySelector('.spop__body');
+    return {
+      el,
+      word: el.querySelector('.spop__word'),
+      pts: el.querySelector('.spop__pts'),
+      rating: 'perfect',
+      gold: false,
+      points: 0,
+      // PERFECT / GOOD: pops up from the cut, hangs for a blink, floats away
+      hit: makeAnim(body, [
+        { opacity: 0, transform: 'translate(-50%, 35%) scale(0.5)', easing: 'cubic-bezier(.2,.9,.3,1)' },
+        { opacity: 1, transform: 'translate(-50%, 0%) scale(1.16)', offset: 0.15 },
+        { opacity: 1, transform: 'translate(-50%, -4%) scale(1)', offset: 0.28 },
+        { opacity: 1, transform: 'translate(-50%, -22%) scale(1)', offset: 0.68, easing: 'ease-in' },
+        { opacity: 0, transform: 'translate(-50%, -55%) scale(0.94)' },
+      ], { duration: 620, easing: 'linear' }),
+      // BAD: a short shudder, then it drops
+      bad: makeAnim(body, [
+        { opacity: 0, transform: 'translate(-50%, 0%) scale(1.12)' },
+        { opacity: 0.95, transform: 'translate(-57%, 0%) scale(1)', offset: 0.16 },
+        { opacity: 0.95, transform: 'translate(-44%, 0%) scale(1)', offset: 0.32 },
+        { opacity: 0.9, transform: 'translate(-50%, 0%) scale(1)', offset: 0.48 },
+        { opacity: 0.85, transform: 'translate(-50%, 0%) scale(1)', offset: 0.7, easing: 'ease-in' },
+        { opacity: 0, transform: 'translate(-50%, 30%) scale(0.96)' },
+      ], { duration: 440, easing: 'linear' }),
+      // MISS: small and dull; it just sinks out of sight
+      miss: makeAnim(body, [
+        { opacity: 0, transform: 'translate(-50%, -25%) scale(1)' },
+        { opacity: 0.7, transform: 'translate(-50%, 0%) scale(1)', offset: 0.22 },
+        { opacity: 0.62, transform: 'translate(-50%, 12%) scale(1)', offset: 0.62, easing: 'ease-in' },
+        { opacity: 0, transform: 'translate(-50%, 55%) scale(0.96)' },
+      ], { duration: 380, easing: 'linear' }),
+      // PERFECT and gold: a thin ring snaps outward from the cut itself
+      ring: makeAnim(el.querySelector('.spop__ring'), [
+        { opacity: 0.95, transform: 'scale(0.3)' },
+        { opacity: 0, transform: 'scale(1.5)' },
+      ], { duration: 360, easing: 'cubic-bezier(.1,.7,.2,1)' }),
+    };
+  });
+  let popNext = 0;
+
+  /**
+   * slashPop(rating, xCss, yCss, { points, gold })   (STAR SLASH)
+   * A small, fast pop where a shard was cut: the rating word and, when it scored, "+points".
+   *   rating      'perfect' | 'good' | 'bad' | 'miss' (anything else counts as a miss)
+   *   xCss, yCss  CSS pixels from the top-left of the HUD root (= the viewport), e.g. what the
+   *               3D view's project() returns for the event's position
+   * The pool holds POP_COUNT nodes: the oldest is reused, so no more than that are ever alive.
+   * Per event, never per frame; transform / opacity only.
+   */
+  function slashPop(rating, xCss, yCss, info) {
+    if (!pops.length) return;
+    const name = String(rating).toLowerCase();
+    const key = SLASH_WORDS[name] ? name : 'miss';
+    const p = pops[popNext];
+    popNext = (popNext + 1) % pops.length;
+    const gold = (key === 'perfect' || key === 'good') && !!(info && info.gold);
+    const points = key !== 'miss' && info && info.points != null ? Math.round(+info.points || 0) : 0;
+
+    let x = +xCss;
+    let y = +yCss;
+    if (x !== x) x = popBox.w * 0.5;
+    if (y !== y) y = popBox.h * 0.5;
+    if (popBox.maxX > popBox.minX) x = x < popBox.minX ? popBox.minX : x > popBox.maxX ? popBox.maxX : x;
+    if (popBox.maxY > popBox.minY) y = y < popBox.minY ? popBox.minY : y > popBox.maxY ? popBox.maxY : y;
+    p.el.style.transform = 'translate3d(' + Math.round(x * 10) / 10 + 'px, ' + Math.round(y * 10) / 10 + 'px, 0)';
+
+    if (key !== p.rating) {
+      p.rating = key;
+      p.el.setAttribute('data-rating', key);
+      p.word.textContent = SLASH_WORDS[key];
+    }
+    if (gold !== p.gold) {
+      p.gold = gold;
+      p.el.classList.toggle('is-gold', gold);
+    }
+    if (points !== p.points) {
+      p.points = points;
+      p.pts.textContent = points > 0 ? '+' + fmt(points) : '';
+    }
+
+    halt(p.hit);
+    halt(p.bad);
+    halt(p.miss);
+    replay(key === 'miss' ? p.miss : key === 'bad' ? p.bad : p.hit);
+    replayIf(p.ring, key === 'perfect' || gold);
+  }
+
+  // back to the start of a run: x1 with an empty ring, no accuracy yet, no pop in flight
+  function resetSlash() {
+    halt(anims.mringTick);
+    halt(anims.mringUp);
+    halt(anims.mringBurst);
+    halt(anims.mringDrop);
+    SL.multQ = 0; // "nothing shown": the first value never plays a step animation
+    applySlashMult(1, 0);
+    applySlashAcc(null);
+    for (let i = 0; i < pops.length; i++) {
+      const p = pops[i];
+      halt(p.hit);
+      halt(p.bad);
+      halt(p.miss);
+      halt(p.ring);
     }
   }
 
@@ -2822,8 +3588,10 @@ export function createHud(root, options) {
    * Layered impact on the scoring player's side: word slam, shock ring, radial streaks, edge
    * glow, points flying into the score. MISS is small, dull and quick. `combo` (optional) lets
    * the combo counter punch in the same frame even if setScore() is called later.
+   * Dance mode only: STAR SLASH shows its ratings where the cut happened, with slashPop().
    */
   function showRating(rating, info) {
+    if (mode === 'slash') return;
     const name = String(rating).toLowerCase();
     const key = RATING_INFO[name] ? name : 'miss';
     const def = RATING_INFO[key];
@@ -2898,7 +3666,8 @@ export function createHud(root, options) {
     const c = Math.max(0, Math.round(+cb || 0));
     if (c < 2) return;
     ui.bannerNum.textContent = String(c);
-    ui.bannerSub.textContent = ui.mult > 1.001 ? '점수 보너스 ×' + fmtMult(ui.mult) : '연속 성공!';
+    if (mode === 'slash') ui.bannerSub.textContent = ui.mult > 1.001 ? '점수 ×' + (Number.isInteger(ui.mult) ? ui.mult : fmtMult(ui.mult)) : '연속 성공!';
+    else ui.bannerSub.textContent = ui.mult > 1.001 ? '점수 보너스 ×' + fmtMult(ui.mult) : '연속 성공!';
     const hot = c >= 20;
     if (hot !== ui.bannerHot) {
       ui.bannerHot = hot;
@@ -3035,7 +3804,7 @@ export function createHud(root, options) {
   }));
   const res = { active: false, t0: 0, dur: 1700, duo: false };
 
-  function readStats(stats) {
+  function readStats(stats, order) {
     const st = stats || {};
     const counts = st.counts || {};
     const score = Math.max(0, Math.round(+st.score || 0));
@@ -3051,10 +3820,22 @@ export function createHud(root, options) {
       counts: {},
       total: 0,
     };
-    for (const r of RATING_ORDER) {
+    for (const r of order || RATING_ORDER) {
       out.counts[r] = Math.max(0, Math.round(+counts[r] || 0));
       out.total += out.counts[r];
     }
+    return out;
+  }
+
+  // STAR SLASH stats: counts perfect / good / bad / miss, plus a rank and the difficulty played
+  function readSlashStats(stats) {
+    const st = stats || {};
+    const out = readStats(st, SLASH_ORDER);
+    const rank = typeof st.rank === 'string' ? st.rank.toUpperCase() : '';
+    const a = out.acc;
+    out.rank = SLASH_RANKS.indexOf(rank) >= 0 ? rank : a >= 0.92 ? 'S' : a >= 0.8 ? 'A' : a >= 0.65 ? 'B' : a >= 0.45 ? 'C' : 'D';
+    if (st.stars == null) out.stars = out.score > 0 ? SLASH_RANK_STARS[out.rank] : 0;
+    out.level = DIFFICULTIES.indexOf(st.difficulty) >= 0 ? st.difficulty : level;
     return out;
   }
 
@@ -3082,8 +3863,8 @@ export function createHud(root, options) {
   }
 
   // rating-count bars: reset now, grow on the next frames
-  function primeBars(prefix, st) {
-    for (const r of RATING_ORDER) {
+  function primeBars(prefix, st, order) {
+    for (const r of order || RATING_ORDER) {
       const bar = refs[prefix + 'bar-' + r];
       bar.style.transition = 'none';
       bar.style.transform = 'scaleX(0)';
@@ -3091,8 +3872,8 @@ export function createHud(root, options) {
     }
   }
 
-  function growBars(prefix, st) {
-    for (const r of RATING_ORDER) {
+  function growBars(prefix, st, order) {
+    for (const r of order || RATING_ORDER) {
       const bar = refs[prefix + 'bar-' + r];
       const v = st.total > 0 ? st.counts[r] / st.total : 0;
       bar.style.transition = '';
@@ -3114,29 +3895,36 @@ export function createHud(root, options) {
     const isNew = score > best && score > 0;
     if (isNew) {
       best = score;
-      writeBest(best);
+      writeBest(best, songBestKey(song));
     }
     updateBestLabel();
     return isNew;
   }
 
   /**
-   * showResults(stats)             one player (v1)
-   * showResults([stats0, stats1])  two players: two columns, the higher score wins ("승리!"),
-   *                                equal scores are a draw ("무승부")
+   * showResults(stats)                     one player (v1)
+   * showResults([stats0, stats1])          two players: two columns, the higher score wins ("승리!"),
+   *                                        equal scores are a draw ("무승부")
+   * showResults(stats, { mode: 'slash' })  STAR SLASH: the one-player layout with the rank letter
+   *                                        beside the stars and PERFECT / GOOD / BAD / MISS counts;
+   *                                        stats = { score, counts: { perfect, good, bad, miss }, accuracy,
+   *                                        maxCombo, rank: 'S'..'D', stars, difficulty? }
+   * Without the second argument the results are shown for the mode the HUD is in.
    */
-  function showResults(statsOrArray) {
+  function showResults(statsOrArray, opts) {
     let s0 = statsOrArray;
     let s1 = null;
     if (Array.isArray(statsOrArray)) {
       s0 = statsOrArray[0];
       s1 = statsOrArray.length > 1 ? statsOrArray[1] : null;
     }
+    if (opts && (opts.mode === 'dance' || opts.mode === 'slash')) setMode(opts.mode);
     if (screen !== 'results') showScreen('results');
     clearTimers();
     starAnims.forEach((a) => a.cancel());
     starAnims.length = 0;
-    if (s1) showResultsDuo(readStats(s0), readStats(s1));
+    if (mode === 'slash') showResultsSlash(readSlashStats(s0));
+    else if (s1) showResultsDuo(readStats(s0), readStats(s1));
     else showResultsSolo(readStats(s0));
     res.t0 = performance.now() + 350;
     res.active = true;
@@ -3147,7 +3935,7 @@ export function createHud(root, options) {
     res.duo = false;
     refs.resSection.setAttribute('data-mode', 'solo');
     refs.resSection.removeAttribute('data-winner');
-    refs.resEyebrow.textContent = 'STAGE CLEAR · STARFALL — NOVA';
+    refs.resEyebrow.textContent = 'STAGE CLEAR · ' + SONGS[song].title + ' — NOVA';
     refs.resTitle.textContent = RESULT_TITLES[st.stars];
     refs.resSub.textContent = '';
     const isNew = recordBest(st.score);
@@ -3165,6 +3953,53 @@ export function createHud(root, options) {
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         growBars('', st);
+        refs.resAccBar.style.transition = '';
+        refs.resAccBar.style.transform = 'scaleX(' + st.acc + ')';
+      });
+    });
+    startCount(resSolo, st);
+  }
+
+  // STAR SLASH: the solo layout, with the rank letter as the hero beside the stars, the four
+  // slash ratings in the breakdown and the best score of the difficulty that was played
+  function showResultsSlash(st) {
+    res.duo = false;
+    refs.resSection.setAttribute('data-mode', 'solo');
+    refs.resSection.removeAttribute('data-winner');
+    refs.resEyebrow.textContent = 'STAGE CLEAR · STAR SLASH · ' + SONGS[song].title + ' · ' + DIFFICULTY_LABELS[st.level];
+    refs.resTitle.textContent = SLASH_TITLES[st.rank];
+    refs.resSub.textContent = '';
+    const isNew = st.score > slashBest[st.level] && st.score > 0;
+    if (isNew) {
+      slashBest[st.level] = st.score;
+      writeStored(SLASH_BEST_KEY + st.level, st.score);
+    }
+    updateBestLabel();
+    refs.resNew.classList.toggle('is-on', isNew);
+    refs.resBest.textContent = DIFFICULTY_LABELS[st.level] + ' 최고 기록 ' + fmt(slashBest[st.level]);
+
+    // the rank slams in first, then the stars light up one by one
+    refs.rank.setAttribute('data-rank', st.rank);
+    refs.rankLetter.textContent = st.rank;
+    if (typeof refs.rank.animate === 'function') {
+      starAnims.push(refs.rank.animate([
+        { opacity: 0, transform: 'scale(2.4) rotate(-10deg)', easing: 'cubic-bezier(.55,0,.9,.45)' },
+        { opacity: 1, transform: 'scale(0.88) rotate(0deg)', offset: 0.45, easing: 'cubic-bezier(.2,.8,.3,1)' },
+        { opacity: 1, transform: 'scale(1.06) rotate(0deg)', offset: 0.72 },
+        { opacity: 1, transform: 'scale(1) rotate(0deg)' },
+      ], { duration: 520, delay: 380, easing: 'linear', fill: 'backwards' }));
+    }
+    lightStars(refs.stars, st.stars, 760);
+    later(() => {
+      if (screen === 'results') emit('resultsStars', st.stars);
+    }, 760 + st.stars * 240);
+
+    primeBars('s', st, SLASH_ORDER);
+    refs.resAccBar.style.transition = 'none';
+    refs.resAccBar.style.transform = 'scaleX(0)';
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        growBars('s', st, SLASH_ORDER);
         refs.resAccBar.style.transition = '';
         refs.resAccBar.style.transform = 'scaleX(' + st.acc + ')';
       });
@@ -3237,8 +4072,14 @@ export function createHud(root, options) {
     if (done) res.active = false;
   }
 
+  // the title's song card: the best of the side that is showing (STAR SLASH: per difficulty)
   function updateBestLabel() {
-    refs.best.textContent = best > 0 ? '최고 기록 ' + fmt(best) : '첫 무대에 도전해 보세요';
+    if (pick === 'slash') {
+      const b = slashBest[level];
+      refs.best.textContent = b > 0 ? DIFFICULTY_LABELS[level] + ' 최고 기록 ' + fmt(b) : '첫 슬래시에 도전해 보세요';
+    } else {
+      refs.best.textContent = best > 0 ? '최고 기록 ' + fmt(best) : '첫 무대에 도전해 보세요';
+    }
   }
 
   // ---- internal ticker (only for loading figure / results count-up) -----------------------
@@ -3321,17 +4162,151 @@ export function createHud(root, options) {
     progQ = -1;
     setProgress(0);
     tileLowSince = 0;
+    resetSlash();
+  }
+
+  function modeLabel() {
+    return mode === 'slash' ? '스타 슬래시' : playerCount === 2 ? '2인 플레이' : '1인 플레이';
   }
 
   /** One or two players. Switches the whole HUD (title -> results) between the 1P and 2P layouts. */
   function setPlayers(n) {
     const count = n === 2 || n === '2' ? 2 : 1;
+    if (count === 2 && mode === 'slash') applyMode('dance'); // STAR SLASH is a one-player mode
     if (count === playerCount) return;
     playerCount = count;
     root.setAttribute('data-players', String(count));
-    refs.camMode.textContent = count === 2 ? '2인 플레이' : '1인 플레이';
+    refs.camMode.textContent = modeLabel();
     if (screen === 'camera') resetCamera();
     layout(); // the tile / live-card canvases and the burst positions depend on the mode
+  }
+
+  // ---- game mode: dance / STAR SLASH ---------------------------------------------------------------
+
+  const levelEls = Array.prototype.slice.call(root.querySelectorAll('.level'));
+
+  function syncPick() {
+    root.setAttribute('data-pick', pick);
+    refs.tabDance.setAttribute('aria-selected', pick === 'dance' ? 'true' : 'false');
+    refs.tabSlash.setAttribute('aria-selected', pick === 'slash' ? 'true' : 'false');
+  }
+
+  function syncLevel() {
+    for (let i = 0; i < levelEls.length; i++) {
+      const on = levelEls[i].getAttribute('data-value') === song;
+      levelEls[i].classList.toggle('is-on', on);
+      levelEls[i].setAttribute('aria-checked', on ? 'true' : 'false');
+    }
+  }
+
+  // The title's mode switch. `byUser`: remember the choice and tell the game.
+  function setPick(m, byUser) {
+    const v = m === 'slash' ? 'slash' : 'dance';
+    if (v === pick) return;
+    pick = v;
+    syncPick();
+    updateBestLabel();
+    drawHowto(); // the how-to list that just appeared has never had a size
+    if (byUser) {
+      writeStored(MODE_KEY, v);
+      refs.titleSection.classList.add('is-picked'); // a switch, not an entrance: no stagger
+      emit('modeChange', { mode: pick, difficulty: level, song });
+    }
+  }
+
+  // everything that names the song: the title's card, the bar over the play screen, and the
+  // little equaliser, which bounces at the song's tempo
+  function syncSongText() {
+    const sg = SONGS[song];
+    refs.songTitle.textContent = sg.title + ' — ' + sg.artist + ' · ' + sg.bpm + ' BPM';
+    refs.songInfo.textContent = sg.genre + ' · ' + songLength(song);
+    refs.barDance.textContent = sg.title + ' — ' + sg.artist;
+    refs.barSlash.textContent = 'STAR SLASH · ' + sg.title;
+    root.style.setProperty('--song-beat', (60 / sg.bpm).toFixed(3) + 's');
+  }
+
+  // The song picker of the title. `byUser`: remember the choice and tell the game.
+  function setSongPick(id, byUser) {
+    if (!SONGS[id] || id === song) return;
+    song = id;
+    level = SONGS[id].level;
+    best = readBest(songBestKey(song));
+    syncLevel();
+    syncSongText();
+    updateBestLabel();
+    if (byUser) {
+      writeStored(SONG_KEY, id);
+      emit('modeChange', { mode: pick, difficulty: level, song });
+    }
+  }
+
+  // by difficulty: the song of that level
+  function setLevel(d, byUser) {
+    for (let i = 0; i < SONG_IDS.length; i++) {
+      if (SONGS[SONG_IDS[i]].level === d) { setSongPick(SONG_IDS[i], byUser); return; }
+    }
+  }
+
+  // Lays the run screens out for a mode (the title's switch is left alone).
+  function applyMode(m) {
+    const v = m === 'slash' ? 'slash' : 'dance';
+    if (v === mode) return;
+    mode = v;
+    root.setAttribute('data-mode', v);
+    if (v === 'slash' && playerCount !== 1) {
+      playerCount = 1;
+      root.setAttribute('data-players', '1');
+    }
+    refs.camMode.textContent = modeLabel();
+    resetSlash();
+    if (tileEmpty) {
+      tileEmpty = false;
+      refs.tile.classList.remove('is-empty');
+    }
+    if (screen === 'camera') resetCamera();
+    layout(); // the lane, the camera panel and the burst positions depend on the mode
+  }
+
+  /**
+   * setMode('dance' | 'slash'): the game mode of the run screens (camera setup, countdown, play,
+   * pause, results); the title's switch follows. The mode is sticky: it stays until the next
+   * setMode() / showScreen(name, { mode }) / showResults(stats, { mode }), except that asking
+   * for two players or starting from the title's dance side always returns to 'dance'.
+   */
+  function setMode(m) {
+    if (m !== 'dance' && m !== 'slash') return;
+    setPick(m, false);
+    applyMode(m);
+  }
+
+  /** setDifficulty('easy' | 'normal' | 'hard'): picks the song of that level (not remembered, no event). */
+  function setDifficulty(d) {
+    setLevel(d, false);
+  }
+
+  /** setSong(id): moves the title's song picker (not remembered, no event). */
+  function setSong(id) {
+    setSongPick(id, false);
+  }
+
+  // the how-to line of a STAR SLASH run: up for the first seconds of play, once per run
+  let hintDone = false;
+  function syncHint(name) {
+    const a = anims.hint;
+    if (!a) return;
+    if (name === 'play' && mode === 'slash' && cfg.hintMs > 0) {
+      if (!hintDone) {
+        hintDone = true;
+        replay(a);
+      } else if (a.playState === 'paused') {
+        a.play();
+      }
+    } else if (name === 'pause') {
+      if (a.playState === 'running' && typeof a.pause === 'function') a.pause();
+    } else {
+      a.cancel(); // any other screen ends it; the next countdown arms it again
+      hintDone = false;
+    }
   }
 
   function focusPrimary() {
@@ -3339,6 +4314,7 @@ export function createHud(root, options) {
     if (!host) return;
     let target = null;
     if (screen === 'camera') target = camError ? host.querySelector('.cam__error .btn--primary') : null;
+    else if (screen === 'title') target = host.querySelector('.title__actions.pick-' + pick + ' .btn--primary');
     else target = host.querySelector('.btn--primary');
     if (target && typeof target.focus === 'function') {
       try {
@@ -3352,6 +4328,7 @@ export function createHud(root, options) {
   /**
    * showScreen(name, data?)
    *   data.players  1 | 2 on any screen ('camera' | 'countdown' | 'play' are where main passes it)
+   *   data.mode     'dance' | 'slash' on any screen: same as setMode() before the switch
    *   countdown     a number or { count } shows that numeral; { seconds, interval } or nothing runs 3-2-1
    *   results       a stats object or [stats0, stats1] is forwarded to showResults()
    */
@@ -3365,8 +4342,10 @@ export function createHud(root, options) {
     if (active && root.contains(active) && typeof active.blur === 'function') active.blur();
     if (name !== 'countdown' || prev !== 'countdown') clearTimers();
 
-    if (data && typeof data === 'object' && !Array.isArray(data) && (data.players === 1 || data.players === 2)) {
-      setPlayers(data.players);
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+      if (data.mode === 'dance' || data.mode === 'slash') setMode(data.mode);
+      // (an explicit STAR SLASH is always one player, whatever `players` says)
+      if ((data.players === 1 || data.players === 2) && data.mode !== 'slash') setPlayers(data.players);
     }
 
     const inRun = name === 'play' || name === 'countdown' || name === 'pause';
@@ -3380,7 +4359,11 @@ export function createHud(root, options) {
       if (!(data && data.keepError)) setCameraError(null);
       if (prev !== 'camera') resetCamera();
     }
-    if (name === 'title') updateBestLabel();
+    if (name === 'title') {
+      updateBestLabel();
+      if (prev !== 'title') refs.titleSection.classList.remove('is-picked');
+    }
+    syncHint(name);
     if (name === 'countdown') runCountdown(data);
     if (name === 'results' && isStatsLike(data)) showResults(data);
     if (!canvasesReady()) layout();
@@ -3405,19 +4388,27 @@ export function createHud(root, options) {
   // title buttons: the HUD switches its own layout right away, then tells the game. The layout
   // only changes when the event really goes out, so the HUD and the game never disagree about
   // the mode after a debounced double press.
+  // The game mode travels with the event. The dance side switches the HUD back to the dance
+  // layout right away; the STAR SLASH layout is only ever put up by the game (setMode /
+  // showScreen(name, { mode })), so a game that ignores the new field still gets a working HUD.
   function startMode(n) {
-    const count = n === 2 ? 2 : 1;
+    const slash = pick === 'slash';
+    const count = !slash && n === 2 ? 2 : 1;
     if (!gate('start')) return;
+    if (!slash) applyMode('dance');
     setPlayers(count);
-    emit('start', { players: count });
+    emit('start', { players: count, mode: pick, difficulty: level, song });
   }
 
   function startDemoNow() {
     // from the title the demo is a solo show; from the camera error panel it keeps the chosen mode
-    const count = screen === 'camera' ? playerCount : 1;
+    const onCamera = screen === 'camera';
+    const count = onCamera ? playerCount : 1;
+    const m = onCamera ? mode : pick;
     if (!gate('startDemo')) return;
+    if (m === 'dance') applyMode('dance');
     setPlayers(count);
-    emit('startDemo', { players: count });
+    emit('startDemo', { players: count, mode: m, difficulty: level, song });
   }
 
   function doAct(act, el) {
@@ -3432,8 +4423,10 @@ export function createHud(root, options) {
       case 'retryCamera':
         setCameraError(null);
         resetCamera();
-        fire('start', { players: playerCount });
+        fire('start', { players: playerCount, mode, difficulty: level, song });
         break;
+      case 'pickMode': setPick(el ? el.getAttribute('data-value') : '', true); break;
+      case 'pickSong': setSongPick(el ? el.getAttribute('data-value') : '', true); break;
       default: break;
     }
   }
@@ -3444,7 +4437,11 @@ export function createHud(root, options) {
     if (!b || !root.contains(b)) return;
     const host = b.closest('.screen');
     if (host && host.getAttribute('data-name') !== screen) return; // stale click on a hidden screen
-    doAct(b.getAttribute('data-act'), b);
+    const act = b.getAttribute('data-act');
+    doAct(act, b);
+    // a pointer press on the mode switch or a song leaves SPACE on the start button
+    // (a press made with the keyboard keeps the focus where it is)
+    if ((act === 'pickMode' || act === 'pickSong') && e.detail > 0) focusPrimary();
   }
 
   function onKey(e) {
@@ -3459,9 +4456,46 @@ export function createHud(root, options) {
       return;
     }
     const tag = e.target && e.target.tagName;
-    if ((k === '1' || k === '2') && screen === 'title' && !DEMO_ONLY) {
+    if (screen === 'title') {
+      // Tab and the left / right arrows work the mode switch (Shift+Tab still walks the focus)
+      if (k === 'Tab' && !e.shiftKey) {
+        setPick(pick === 'slash' ? 'dance' : 'slash', true);
+        focusPrimary();
+        e.preventDefault();
+        return;
+      }
+      if (k === 'ArrowLeft' || k === 'ArrowRight') {
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        const dir = k === 'ArrowRight' ? 1 : -1;
+        const at = e.target ? levelEls.indexOf(e.target) : -1;
+        if (at >= 0) {
+          // inside the song picker the arrows move within it, as in any radio group
+          const i = SONG_IDS.indexOf(song) + dir;
+          if (i >= 0 && i < SONG_IDS.length) {
+            setSongPick(SONG_IDS[i], true);
+            if (levelEls[i] && typeof levelEls[i].focus === 'function') levelEls[i].focus();
+          }
+        } else {
+          setPick(dir > 0 ? 'slash' : 'dance', true);
+          focusPrimary();
+        }
+        e.preventDefault();
+        return;
+      }
+      // up / down: the previous / next song (easiest first)
+      if (k === 'ArrowUp' || k === 'ArrowDown') {
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        const i = SONG_IDS.indexOf(song) + (k === 'ArrowDown' ? 1 : -1);
+        if (i >= 0 && i < SONG_IDS.length) setSongPick(SONG_IDS[i], true);
+        e.preventDefault();
+        return;
+      }
+    }
+    if ((k === '1' || k === '2' || k === '3') && screen === 'title') {
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-      startMode(k === '2' ? 2 : 1);
+      if (pick === 'slash') setSongPick(SONG_IDS[+k - 1], true); // 1 · 2 · 3: the song (easy, normal, hard)
+      else if (DEMO_ONLY || k === '3') return;
+      else startMode(k === '2' ? 2 : 1);
       e.preventDefault();
       return;
     }
@@ -3494,6 +4528,7 @@ export function createHud(root, options) {
       if (destroyed) return;
       clearSprites();
       fitRatingWord();
+      drawHowto(); // one of the how-to icons carries a numeral in the display face
     });
   }
 
@@ -3512,18 +4547,26 @@ export function createHud(root, options) {
   // ---- boot ------------------------------------------------------------------------------------------
 
   refs.meterGoal.style.left = cfg.readyThreshold * 100 + '%';
-  refs.camMode.textContent = playerCount === 2 ? '2인 플레이' : '1인 플레이';
+  refs.camMode.textContent = modeLabel();
+  syncPick();
+  syncLevel();
+  syncSongText();
   updateBestLabel();
   setProgress(0);
   layout();
   kick();
 
   // v2 API at a glance (every `player` is 0 | 1 and defaults to 0, so v1 callers work unchanged):
-  //   on('start' | 'startDemo' | 'cameraReady', ({ players }) => …)   'retry' | 'menu' | 'pause' | 'resume'
-  //   on('countdownTick', n) · on('countdownDone') · on('resultsStars', stars)
+  //   on('start' | 'startDemo', ({ players, mode, difficulty, song }) => …)   on('cameraReady', ({ players, mode }) => …)
+  //   on('modeChange', ({ mode, difficulty, song }) => …)   the title's mode switch / song picker was used
+  //   'retry' | 'menu' | 'pause' | 'resume' · on('countdownTick', n) · on('countdownDone') · on('resultsStars', stars)
   //   per frame: updateTimeline · setSync (each player) · drawPlayer   (no allocation, no layout)
+  // STAR SLASH (mode 'slash', one player): setMode / showScreen(name, { mode }) put the mode up;
+  //   setSlashScore (any time, also every frame) · slashPop (per judged shard) · showResults(stats, { mode })
+  //   setProgress / setSection / drawPlayer as in the dance mode; updateTimeline, setSync and
+  //   showRating are dance-only and do nothing visible in this mode
   return {
-    showScreen, // (name, { players }?)
+    showScreen, // (name, { players, mode }?)
     setLoading, // (progress01, text?)
     on, // (event, cb) -> unsubscribe
     setScore, // (score, combo, multiplier, player?)
@@ -3534,10 +4577,15 @@ export function createHud(root, options) {
     setProgress, // (p01)
     setSection, // (name)
     drawPlayer, // (videoEl | null, [r0, r1] | result | null)
-    showResults, // (stats | [stats0, stats1])
+    showResults, // (stats | [stats0, stats1], { mode }?)
     setCameraError, // (kind | Error | null)
+    setMode, // ('dance' | 'slash')
+    setSlashScore, // (score, combo, multiplier, accuracy01, multProgress01)
+    slashPop, // (rating, xCss, yCss, { points, gold }?)
     // extras (not required by the contract)
     setPlayers,
+    setDifficulty, // ('easy' | 'normal' | 'hard')
+    setSong, // (songId)  the title's song picker
     layout,
     destroy,
     get screen() {
@@ -3545,6 +4593,18 @@ export function createHud(root, options) {
     },
     get players() {
       return playerCount;
+    },
+    get mode() {
+      return mode;
+    },
+    get titleMode() {
+      return pick;
+    },
+    get difficulty() {
+      return level;
+    },
+    get song() {
+      return song;
     },
     root,
   };

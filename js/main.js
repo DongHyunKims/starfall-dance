@@ -5,6 +5,10 @@
 //   ?players=2   with ?demo=1: run the demo with two players whichever button is pressed
 //   ?debug=1     fps + judge overlay, and window.__game.seek(beat)
 //   ?model=full  a more accurate (and slower) pose model for the camera
+//   ?mode=slash  with ?demo=1: STAR SLASH whichever button is pressed
+//   ?song=moondrift|starfall|cometrush  that song whatever the title says (&difficulty=easy|normal|hard
+//                overrides the STAR SLASH chart that normally comes with the song)
+//   ?latency=0.12  STAR SLASH: seconds by which the camera's view of the hands is assumed to lag
 //   ?telemetry=1 (see js/telemetry.js) post numbers about the run to the local dev server
 
 import { createStage, RATING_COLORS } from './stage.js';
@@ -15,8 +19,14 @@ import { createJudge, createLiveMatcher } from './scoring.js';
 import { createPoseTracker, completePose } from './pose-tracker.js';
 import { createDemoPlayer } from './demo-player.js';
 import { MOVES, HERO_POSES, samplePose, getPose, lerpPose } from './choreo.js';
+import { buildChart, DIFFICULTIES } from './slash/chart.js';
+import { createHandReader, createDemoHands } from './slash/hands.js';
+import { createSlashJudge, SLASH_TUNING } from './slash/judge.js';
+import { createSlashView } from './slash/view.js';
+import { createSlashHero } from './slash/hero.js';
 import {
   TOTAL_BEATS, SEC_PER_BEAT, SONG_DURATION, beatToSec, secToBeat, sectionAtBeat,
+  SONGS, DEFAULT_SONG, songById, songForLevel, setSong,
 } from './song.js';
 
 const params = new URLSearchParams(location.search);
@@ -24,6 +34,12 @@ const DEMO_ONLY = window.STARFALL_DEMO_ONLY === true;
 const FORCE_DEMO = DEMO_ONLY || params.get('demo') === '1';
 const FORCE_PLAYERS = params.get('players') === '2' ? 2 : 0;
 const DEBUG = params.get('debug') === '1';
+const FORCE_MODE = params.get('mode') === 'slash' ? 'slash' : (params.get('mode') === 'dance' ? 'dance' : '');
+const FORCE_DIFFICULTY = DIFFICULTIES.includes(params.get('difficulty')) ? params.get('difficulty') : '';
+// a song named in the URL; a bare ?difficulty= picks the song of that level
+const FORCE_SONG = songById(params.get('song')) ? params.get('song') : (FORCE_DIFFICULTY ? songForLevel(FORCE_DIFFICULTY).id : '');
+const SLASH_LATENCY = params.has('latency') && Number.isFinite(parseFloat(params.get('latency')))
+  ? Math.min(0.4, Math.max(0, parseFloat(params.get('latency')))) : null;
 
 const MAX_PLAYERS = 2;
 const PLAYER_COLORS = [0x19e3d2, 0xff5a6e];
@@ -76,9 +92,24 @@ for (let i = 0; i < MAX_PLAYERS; i++) {
 }
 
 // ---------------------------------------------------------------------------
+// STAR SLASH (the second mode): the view lives in the stage's scene, the rest is per run
+// ---------------------------------------------------------------------------
+const slashView = createSlashView(stage);
+// NOVA with a blade in each hand, driven by the player's hands (see js/slash/hero.js)
+const slashHero = createSlashHero({ dancer, view: slashView, scene: stage.scene });
+const handReader = createHandReader();
+const slashStats = {};      // judge.stats() scratch, refilled every frame
+let slash = null;           // { chart, judge, demoHands, opts } of the current run
+let slashHands = null;      // this frame's hands (for telemetry / debugging)
+const heroGroove = { beat: null, spb: 0.5, intensity: 0.25, hold: false }; // what keeps NOVA's feet in time (slash mode)
+
+// ---------------------------------------------------------------------------
 // state
 // ---------------------------------------------------------------------------
 let state = 'loading';
+let mode = 'dance';        // 'dance' (follow the coach) | 'slash' (STAR SLASH)
+let difficulty = 'normal'; // STAR SLASH chart (it comes with the song)
+let songId = DEFAULT_SONG;  // the song of the run (see chooseMode / loadSongThen)
 let demo = FORCE_DEMO;
 let playerCount = 1;
 let runId = 0;             // bumps whenever a run starts or is abandoned (cancels stale callbacks)
@@ -191,10 +222,28 @@ function goTitle() {
   clockStop();
   tracker.stop();
   hideAvatars();
+  slashView.setActive(false);
+  slashHero.leave();
   stage.setMode('menu');
   dancer.setExpression('smile');
   hud.showScreen('title');
   setState('title');
+}
+
+/** A fresh STAR SLASH run: chart for the chosen difficulty, judge, simulated hands for the demo. */
+function setupSlashRun() {
+  const chart = buildChart(difficulty);
+  const opts = demo ? { latencySec: 0 } : (SLASH_LATENCY !== null ? { latencySec: SLASH_LATENCY } : {});
+  slash = {
+    chart,
+    opts,
+    judge: createSlashJudge(chart.notes, opts),
+    demoHands: createDemoHands(chart.notes, { skill: 0.84, seed: demoSeed++ }),
+  };
+  handReader.reset();
+  slashHands = null;
+  events.length = 0;
+  slashView.start(chart);
 }
 
 function startCountdown() {
@@ -208,14 +257,26 @@ function startCountdown() {
   rewindTo = null;
   lastSongT = 0;
   resultStats = null;
-  stage.setMode('play');
-  dancer.setExpression('smile');
+  if (mode === 'slash') {
+    setupSlashRun();
+    slashView.setActive(true);
+    slashHero.enter();
+    stage.setMode('slash');
+    dancer.setExpression('fierce');
+  } else {
+    slashView.setActive(false);
+    slashHero.leave();
+    stage.setMode('play');
+    dancer.setExpression('smile');
+  }
   // State first: showScreen('countdown') emits the first countdownTick synchronously.
   setState('countdown');
   // The HUD only resets its own run state when entering from outside a run (pause -> retry
   // stays "inside"), so do it explicitly as well.
-  hud.showScreen('countdown', { players: playerCount });
-  for (let i = 0; i < playerCount; i++) hud.setScore(0, 0, 1, i);
+  if (hud.setMode) hud.setMode(mode);
+  hud.showScreen('countdown', { players: playerCount, mode });
+  if (mode === 'slash') showSlashScore();
+  else for (let i = 0; i < playerCount; i++) hud.setScore(0, 0, 1, i);
   hud.setProgress(0);
   hud.setSection(sectionAtBeat(0).name);
 }
@@ -232,7 +293,7 @@ function startPlay() {
   // let "시작!" breathe for a moment (the song has its own 1 s lead-in), then swap the screen
   handoffTimer = setTimeout(() => {
     if (id === runId && state === 'play' && hud.screen === 'countdown') {
-      hud.showScreen('play', { players: playerCount });
+      hud.showScreen('play', { players: playerCount, mode });
     }
   }, 650);
 }
@@ -250,7 +311,7 @@ function resumeGame() {
   if (rewindTo != null) clockStart(rewindTo); else clockResume();
   rewindTo = null;
   if (!demo) tracker.resumeVideo();
-  if (hud.screen !== 'play') hud.showScreen('play', { players: playerCount });
+  if (hud.screen !== 'play') hud.showScreen('play', { players: playerCount, mode });
   setState('play');
 }
 
@@ -259,6 +320,23 @@ function finishRun() {
   runId++;
   clearTimeout(handoffTimer);
   fallbackClock.running = false;
+  if (mode === 'slash') {
+    handleSlashEvents(slash.judge.update(SONG_DURATION + 10), true); // whatever is left is a MISS
+    const st = slash.judge.stats();
+    st.difficulty = difficulty;
+    resultStats = st;
+    resultStars = st.stars;
+    resultsAt = performance.now();
+    tracker.stop();
+    hideAvatars();
+    slashView.setActive(false);
+    slashHero.leave();
+    stage.setMode('results');
+    dancer.setExpression(resultStars >= 2 ? 'smile' : 'neutral');
+    hud.showResults(st, { mode: 'slash' });
+    setState('results');
+    return;
+  }
   const all = [];
   resultStars = 0;
   for (let i = 0; i < playerCount; i++) {
@@ -285,8 +363,11 @@ async function startCameraPath() {
   cameraWanted = false;
   clockStop();
   hideAvatars();
+  slashView.setActive(false);
+  slashHero.leave();
   stage.setMode('menu');
-  hud.showScreen('camera', { players: playerCount });
+  if (hud.setMode) hud.setMode(mode);
+  hud.showScreen('camera', { players: playerCount, mode });
   setState('camera');
 
   // model and camera in parallel; either failing lands on the HUD's error panel (demo still works)
@@ -328,6 +409,8 @@ function cameraLost() {
   clockStop();
   tracker.stop();
   hideAvatars();
+  slashView.setActive(false);
+  slashHero.leave();
   stage.setMode('menu');
   setState('camera');
   hud.setCameraError('nodevice');
@@ -338,21 +421,74 @@ function cameraLost() {
 // ---------------------------------------------------------------------------
 const wantedPlayers = (e) => (FORCE_PLAYERS || (e && e.players === 2 ? 2 : 1));
 
+/** Take the mode and the song (each song is one difficulty) the player picked on the title screen. */
+function chooseMode(e) {
+  mode = FORCE_MODE || (e && e.mode === 'slash' ? 'slash' : 'dance');
+  songId = FORCE_SONG || (e && songById(e.song) ? e.song : (songById(hud.song) ? hud.song : DEFAULT_SONG));
+  difficulty = FORCE_DIFFICULTY || SONGS[songId].level;
+  // STAR SLASH is a one-player mode
+  setPlayerCount(DEMO_ONLY || mode === 'slash' ? 1 : wantedPlayers(e));
+}
+
+/**
+ * Make the chosen song the current one, then go on. A song's track is rendered the first time
+ * it is needed (a few seconds, behind the loading screen); after that the hand-off is instant.
+ */
+function loadSongThen(next) {
+  const id = songId;
+  const apply = () => {
+    setSong(id); // the game's clock: beats, sections, charts and judges all read it
+    if (music.isReady) music.use(id);
+  };
+  if (!music.isReady || music.has(id)) { apply(); next(); return; } // (no audio engine: the silent clock)
+  const run = ++runId;
+  tracker.stop();
+  setState('loading');
+  hud.showScreen('loading');
+  hud.setLoading(0.02, SONGS[id].title + ' 준비 중');
+  music.prepare(id, (p, label) => {
+    if (run === runId && state === 'loading') hud.setLoading(p, label || '음악을 만드는 중');
+  }).then(() => {
+    if (run !== runId || state !== 'loading') return;
+    apply();
+    setState('title'); // back where the start buttons are allowed from
+    next();
+  }, (err) => {
+    console.warn('[game] could not render the song', id, err);
+    if (run !== runId) return;
+    songId = music.songId || DEFAULT_SONG;
+    setSong(songId);
+    goTitle();
+  });
+}
+
 hud.on('start', (e) => {
   if (state !== 'title' && state !== 'camera') return;
   music.playSfx('ui');
-  setPlayerCount(DEMO_ONLY ? 1 : wantedPlayers(e));
-  if (DEMO_ONLY) { runId++; demo = true; startCountdown(); return; }
-  startCameraPath();
+  chooseMode(e);
+  loadSongThen(() => {
+    if (DEMO_ONLY) { runId++; demo = true; startCountdown(); return; }
+    startCameraPath();
+  });
 });
 hud.on('startDemo', (e) => {
   if (state !== 'title' && state !== 'camera') return;
   music.playSfx('ui');
   runId++;
   tracker.stop();
-  setPlayerCount(DEMO_ONLY ? 1 : wantedPlayers(e));
-  demo = true;
-  startCountdown();
+  // from the camera error panel ("데모로 플레이") the mode chosen on the title stays
+  if (state === 'title' || (e && e.mode)) chooseMode(e);
+  loadSongThen(() => {
+    demo = true;
+    startCountdown();
+  });
+});
+// A song picked on the title: NOVA idles at its tempo, and its track starts rendering in the
+// background so that pressing start does not have to wait for it.
+hud.on('modeChange', (e) => {
+  if (state !== 'title' || !e || FORCE_SONG || !songById(e.song)) return;
+  setSong(e.song);
+  if (music.isReady && !music.has(e.song)) music.prepare(e.song).catch(() => {});
 });
 hud.on('cameraReady', () => {
   if (state !== 'camera') return;
@@ -402,6 +538,35 @@ onResize();
 // ---------------------------------------------------------------------------
 // judged moves -> feedback
 // ---------------------------------------------------------------------------
+function showSlashScore() {
+  if (!slash) return;
+  const st = slash.judge.stats(slashStats);
+  const step = SLASH_TUNING.comboStep || 8;
+  const maxed = st.multiplier >= (SLASH_TUNING.comboMaxMultiplier || 4);
+  const toNext = maxed ? 1 : (st.combo % step) / step;
+  if (hud.setSlashScore) hud.setSlashScore(st.score, st.combo, st.multiplier, st.judged ? st.accuracy : 1, toNext);
+  else hud.setScore(st.score, st.combo, st.multiplier, 0);
+}
+
+function handleSlashEvents(list, silent) {
+  if (!list || !list.length) return;
+  for (const ev of list) {
+    if (events.length < 600) {
+      events.push({ mode: 'slash', id: ev.note.id, beat: ev.note.beat, rating: ev.rating, hand: ev.hand, reason: ev.reason, offset: ev.offsetSec, angle: ev.angleErr, points: ev.points });
+    }
+    if (silent) continue; // the run is over: count it, do not celebrate it
+    slashView.onEvent(ev);
+    if (hud.slashPop) {
+      const p = slashView.project(ev.x, ev.y);
+      hud.slashPop(ev.rating, p.x, p.y, { points: ev.points, gold: ev.gold });
+    }
+    const clean = ev.rating === 'perfect' || ev.rating === 'good';
+    const sfx = clean && ev.gold ? 'slashGold' : ev.rating === 'perfect' ? 'slashPerfect' : ev.rating === 'good' ? 'slash' : ev.rating === 'bad' ? 'slashBad' : '';
+    if (sfx) music.playSfx(sfx);
+  }
+  if (!silent) showSlashScore();
+}
+
 function handleEvents(i, list, silent) {
   if (!list || !list.length) return;
   const P = players[i];
@@ -452,10 +617,17 @@ function drawDebug(now, t, beat, section) {
   const info = stage.renderer.info;
   const lines = [
     `fps ${fps.toFixed(0)}  calls ${info.render.calls}  tris ${(info.render.triangles / 1000).toFixed(0)}k  pr ${stage.renderer.getPixelRatio().toFixed(2)}  quality ${(quality.scale * 100).toFixed(0)}%`,
-    `state ${state}${demo ? ' (demo)' : ''}  players ${playerCount}  hud ${hud.screen}  stage ${stage.mode}`,
+    `state ${state}${demo ? ' (demo)' : ''}  mode ${mode}  players ${playerCount}  hud ${hud.screen}  stage ${stage.mode}`,
     `t ${t.toFixed(2)}s  beat ${beat.toFixed(2)}  ${section.name}  energy ${energy.toFixed(2)}`,
   ];
-  for (let i = 0; i < playerCount; i++) {
+  if (mode === 'slash' && slash) {
+    const s = slash.judge.stats();
+    lines.push(`SLASH ${difficulty}  ${s.score}/${s.maxScore}  combo ${s.combo} x${s.multiplier}  judged ${s.judged}/${s.total}  acc ${(s.accuracy * 100).toFixed(0)}%  rank ${s.rank}`);
+    lines.push(`   P ${s.counts.perfect} G ${s.counts.good} B ${s.counts.bad} M ${s.counts.miss}  shards ${slashView.visibleShards}`);
+    const h = slashHands;
+    if (h) lines.push(`   L ${h.l.x.toFixed(2)},${h.l.y.toFixed(2)} v${h.l.speed.toFixed(1)} s${h.l.seen.toFixed(1)}   R ${h.r.x.toFixed(2)},${h.r.y.toFixed(2)} v${h.r.speed.toFixed(1)} s${h.r.seen.toFixed(1)}`);
+  }
+  for (let i = 0; i < playerCount && mode !== 'slash'; i++) {
     const P = players[i];
     const s = P.judge.stats();
     const r = results[i];
@@ -590,15 +762,22 @@ function frame(now) {
     const section = sectionAtBeat(Math.max(0, beat));
     const levels = music.isReady ? music.getLevels() : { bass: 0, mid: 0, high: 0, kick: 0 };
 
+    const slashMode = mode === 'slash';
+
     // ---- player input ----
     results[0] = null; results[1] = null;
+    slashHands = null;
     if (state === 'camera' || (onStage && !demo)) {
       tracker.update(now);
       const tracked = tracker.getPlayers();
       results[0] = tracked[0];
       results[1] = playerCount === 2 ? tracked[1] : null;
-    } else if (demo && onStage) {
+    } else if (demo && onStage && !slashMode) {
       for (let i = 0; i < playerCount; i++) results[i] = players[i].demo.sample(t);
+    }
+    if (slashMode && onStage && slash) {
+      // hands on the play plane: simulated in a demo, read from the camera otherwise
+      slashHands = demo ? slash.demoHands.sample(t) : handReader.read(results[0], t);
     }
 
     // ---- coach ----
@@ -616,14 +795,22 @@ function frame(now) {
       coach = menuPose(wall);
       target = 0.35;
     }
-    dancer.setPose(coach);
+    const heroOn = mode === 'slash' && onStage && slashHero.active;
+    if (!heroOn) dancer.setPose(coach);
     energy += (target - energy) * (1 - Math.exp(-dt * 2.5));
 
     // ---- judging ----
     if (!demo && (state === 'play' || state === 'countdown') && !tracker.cameraActive) {
       cameraLost(); // unplugged / permission revoked: do not keep scoring MISS in silence
     }
-    if (state === 'play') {
+    if (state === 'play' && slashMode) {
+      lastSongT = t;
+      slash.judge.push(slashHands);
+      handleSlashEvents(slash.judge.update(t), false);
+      hud.setProgress(Math.min(1, Math.max(0, beat / TOTAL_BEATS)));
+      hud.setSection(section.name);
+      if (!music.isReady && t >= SONG_DURATION) finishRun();
+    } else if (state === 'play') {
       lastSongT = t;
       for (let i = 0; i < playerCount; i++) {
         const P = players[i];
@@ -641,14 +828,23 @@ function frame(now) {
       dancer.setExpression(chorus ? 'fierce' : 'smile');
       if (!music.isReady && t >= SONG_DURATION) finishRun();
     }
+    // STAR SLASH: NOVA's arms follow the hands (after the judge, so a finished run has already left)
+    if (slashMode && onStage && slashHero.active) {
+      // her feet keep the song's time (on their own through the countdown, frozen while paused)
+      heroGroove.beat = state === 'play' ? beat : null;
+      heroGroove.hold = state === 'pause';
+      heroGroove.spb = SEC_PER_BEAT;
+      heroGroove.intensity = state === 'play' ? section.intensity : 0.25;
+      slashHero.pose(slashHands, dt, levels, heroGroove);
+    }
 
     // ---- player avatars ----
     const stageNow = state === 'play' || state === 'pause' || state === 'countdown';
-    const fallback = stageNow ? idleGroove(beat) : null;
+    const fallback = stageNow && !slashMode ? idleGroove(beat) : null;
     for (let i = 0; i < MAX_PLAYERS; i++) {
       const P = players[i];
       const r = results[i];
-      const here = stageNow && i < playerCount && (demo || seenAmount(r) > 0.3 || state === 'pause');
+      const here = stageNow && !slashMode && i < playerCount && (demo || seenAmount(r) > 0.3 || state === 'pause');
       P.avatar.setPresence(here ? 1 : 0);
       if (here && r && r.pose) {
         completePose(r, fallback, P.avatarPose);
@@ -659,13 +855,16 @@ function frame(now) {
     }
 
     dancer.update(wall, dt, { levels, energy });
+    if (slashMode && slashHero.active) slashHero.sync(dt, slashHands); // blades onto her solved wrists
+    // the slash view positions the camera for its mode, so it goes before the stage
+    if (slashMode && stageNow) slashView.update(wall, dt, { songTime: t, beat, hands: slashHands, levels, energy });
     stage.update(wall, dt, { beat, levels, energy, section });
     stage.renderer.info.reset();
     stage.render();
 
     // ---- HUD ----
     if (stageNow) {
-      hud.updateTimeline(beat, moves);
+      if (!slashMode) hud.updateTimeline(beat, moves);
       hud.drawPlayer(demo ? null : video, results);
     } else if (state === 'camera') {
       hud.drawPlayer(video, results);
@@ -690,12 +889,27 @@ window.__game = {
   get playerCount() { return playerCount; },
   get results() { return results; },
   get avatars() { return players.map((P) => P.avatar); },
-  players, events, quality,
+  get mode() { return mode; },
+  get difficulty() { return difficulty; },
+  get song() { return songId; },
+  get slash() { return slash; },
+  get hands() { return slashHands; },
+  players, events, quality, slashView, slashHero,
   hud, stage, dancer, music, tracker, moves,
   /** Debug: jump to a beat while playing. Moves before it are dropped from every judge. */
   seek(beat) {
     if (state !== 'play' && state !== 'pause') return false;
     const b = Math.max(-2, Math.min(TOTAL_BEATS + 3.5, +beat || 0));
+    if (mode === 'slash' && slash) {
+      const left = slash.chart.notes.filter((n) => n.beat >= b + 0.5);
+      slash.judge = createSlashJudge(left, slash.opts);
+      slashView.start({ notes: left, approachSec: slash.chart.approachSec });
+      showSlashScore();
+      rewindTo = null;
+      if (state === 'pause') { hud.showScreen('play', { players: playerCount, mode }); setState('play'); }
+      clockStart(beatToSec(b));
+      return true;
+    }
     const rest = moves.filter((m) => m.beat >= b + 0.5);
     for (let i = 0; i < MAX_PLAYERS; i++) {
       const P = players[i];
@@ -718,7 +932,11 @@ window.__game = {
 setPlayerCount(FORCE_PLAYERS || 1);
 (async () => {
   try {
-    await music.init((p, label) => hud.setLoading(0.04 + 0.96 * p, label || '음악을 만드는 중'));
+    // the song the title opens on (the one picked last time, or the one named in the URL)
+    if (FORCE_SONG && hud.setSong) hud.setSong(FORCE_SONG);
+    songId = FORCE_SONG || (songById(hud.song) ? hud.song : DEFAULT_SONG);
+    setSong(songId);
+    await music.init((p, label) => hud.setLoading(0.04 + 0.96 * p, label || '음악을 만드는 중'), songId);
   } catch (e) {
     console.warn('[game] audio engine unavailable, running silent', e);
   }

@@ -8,13 +8,11 @@
 //
 // Every musical event time derives from beatToSec() in song.js.
 
-import { SONG, TOTAL_BEATS, SEC_PER_BEAT, SONG_DURATION, beatToSec, secToBeat } from './song.js';
+import { SONGS, DEFAULT_SONG, TOTAL_BEATS, songById, timingOf } from './song.js';
 
 // ───────────────────────────────────────────────────────────── constants / tuning knobs
 
 const SR = 44100; // offline render rate (the live context resamples if it differs)
-const SPB = SEC_PER_BEAT;
-const BPB = SONG.beatsPerBar;
 const CHUNK_PREROLL = 0.05; // s of pre-roll before each section downbeat inside its chunk
 const REVERB_TAIL = 3.2; // s rendered past the last event of a chunk (reverb / delay tails)
 
@@ -150,6 +148,170 @@ const INTRO_MEL = [
 const PLUCK_STEPS = [0, 3, 6, 8, 11, 14]; // 16th steps, 3-3-2-3-3-2
 const PLUCK_ORDER = [0, 2, 1, 3, 2, 1];
 
+// What a song is made of: chords, progressions and melodies (above for STARFALL), plus the few
+// groove choices the arrangement leaves open:
+//   pluckSteps / pluckOrder  the arpeggio (16th steps of the bar, which chord tone on each)
+//   verseKick                kick beats of a verse bar
+//   verseBass                [beat, length, +semitones, velocity, sub?] per bar
+//   chorusKick / chorusHits  kick beats and chord stabs [beat, length, velocity] of a chorus bar
+//   chorusBass               the mid-bass pulse under the chorus: 'eighth' | 'quarter' | 'sixteenth'
+//   outroMel / endChord / endBells   how it resolves
+const STARFALL = {
+  CH, PROG, HOOK, COUNTER, VERSE_MEL, BRIDGE_MEL, INTRO_MEL,
+  outroMel: [HOOK[0], HOOK[1], HOOK[0]], endChord: 'FmEnd', endBells: [[77, 0.6], [84, 0.5], [89, 0.35]],
+  pluckSteps: PLUCK_STEPS, pluckOrder: PLUCK_ORDER,
+  verseKick: [0, 1, 2, 3],
+  verseBass: [[0, 1.0, 0, 1], [1.5, 0.5, 0, 0.9], [2.5, 0.75, 0, 1], [3.5, 0.4, 12, 0.85, false]],
+  chorusKick: [0, 1, 2, 3],
+  chorusHits: [[0, 1.4, 1], [1.5, 0.9, 1], [2.5, 1.4, 0.95]],
+  chorusBass: 'eighth',
+};
+
+// ── MOON DRIFT (original). Key: D major, 100 BPM: slow and warm, a laid-back kick, long notes.
+const MOON_DRIFT = (() => {
+  const CH = {
+    D: { root: 38, notes: [57, 62, 64, 66] }, // Dadd9
+    A: { root: 33, notes: [57, 59, 61, 64] }, // Aadd9
+    Bm: { root: 35, notes: [57, 59, 62, 66] }, // Bm7
+    G: { root: 43, notes: [55, 59, 62, 66] }, // Gmaj7
+    Em: { root: 40, notes: [55, 59, 62, 64] }, // Em7
+    Fsm: { root: 42, notes: [57, 61, 64, 66] }, // F#m7
+    GHi: { root: 43, notes: [59, 62, 66, 69] },
+    AHi: { root: 45, notes: [61, 64, 69, 73] },
+    A7: { root: 33, notes: [55, 61, 64, 69] }, // dominant lift into the last chorus
+    DEnd: { root: 38, notes: [54, 57, 62, 69] },
+  };
+  const PROG = {
+    intro: ['G', 'A', 'D', 'A'],
+    verse: ['D', 'Bm', 'G', 'A'],
+    build: ['Em', 'Fsm', 'GHi', 'AHi'],
+    chorus: ['D', 'A', 'Bm', 'G'],
+    bridge: ['G', 'D', 'Em', 'A7'],
+    outro: ['G', 'A', 'D'],
+  };
+  const HOOK = [
+    [[0, 1, 78], [1, 0.5, 76], [1.5, 1, 74], [2.5, 0.5, 76], [3, 1, 78]],
+    [[0, 1.5, 76], [1.5, 0.5, 73], [2, 1, 76], [3, 1, 81]],
+    [[0, 1, 78], [1, 0.5, 76], [1.5, 1, 74], [2.5, 0.5, 78], [3, 1, 83]],
+    [[0, 1.5, 81], [1.5, 0.5, 79], [2, 2, 78]],
+    [[0, 1, 78], [1, 0.5, 76], [1.5, 1, 74], [2.5, 0.5, 76], [3, 1, 78]],
+    [[0, 1.5, 76], [1.5, 0.5, 73], [2, 1, 76], [3, 0.5, 81], [3.5, 0.5, 83]],
+    [[0, 1, 86], [1, 0.5, 83], [1.5, 1, 81], [2.5, 0.5, 78], [3, 1, 81]],
+    [[0, 1, 79], [1, 1, 78], [2, 2, 74]],
+  ];
+  const COUNTER = [
+    [[0, 2, 81], [2, 2, 86]],
+    [[0, 2, 85], [2, 2, 81]],
+    [[0, 2, 83], [2, 2, 86]],
+    [[0, 2, 83], [2, 2, 86]],
+    [[0, 2, 81], [2, 2, 86]],
+    [[0, 2, 85], [2, 2, 88]],
+    [[0, 2, 90], [2, 2, 86]],
+    [[0, 4, 86]],
+  ];
+  const v1 = [[0.5, 0.5, 69], [1, 0.5, 74], [1.5, 1, 78], [2.5, 0.5, 76], [3, 1, 74]];
+  const v2 = [[0.5, 0.5, 71], [1, 0.5, 74], [1.5, 1, 78], [2.5, 0.5, 76], [3, 1, 74]];
+  const v3 = [[0.5, 0.5, 71], [1, 0.5, 74], [1.5, 1, 79], [2.5, 0.5, 78], [3, 1, 74]];
+  const VERSE_MEL = [
+    v1, v2, v3,
+    [[0.5, 0.5, 69], [1, 0.5, 73], [1.5, 1, 76], [2.5, 0.5, 78], [3, 0.5, 76], [3.5, 0.5, 73]],
+    v1, v2, v3,
+    [[0.5, 0.5, 69], [1, 0.5, 73], [1.5, 1, 76], [2.5, 1.5, 81]],
+  ];
+  const BRIDGE_MEL = [
+    [[0, 1.5, 78], [1.5, 0.5, 74], [2, 2, 71]],
+    [[0, 1.5, 76], [1.5, 0.5, 74], [2, 2, 69]],
+    [[0, 1.5, 79], [1.5, 0.5, 76], [2, 2, 71]],
+    [[0, 1.5, 76], [1.5, 0.5, 73], [2, 0.5, 76], [2.5, 0.5, 81]],
+  ];
+  return {
+    CH, PROG, HOOK, COUNTER, VERSE_MEL, BRIDGE_MEL, INTRO_MEL: [HOOK[0], HOOK[1]],
+    outroMel: [HOOK[0], HOOK[1], HOOK[0]], endChord: 'DEnd', endBells: [[74, 0.6], [81, 0.5], [86, 0.35]],
+    pluckSteps: [0, 4, 6, 8, 12, 14], pluckOrder: [0, 1, 2, 3, 2, 1],
+    verseKick: [0, 2.5],
+    verseBass: [[0, 1.5, 0, 1], [2.5, 1.0, 0, 0.9], [3.5, 0.4, 7, 0.7, false]],
+    chorusKick: [0, 1.5, 2.5],
+    chorusHits: [[0, 1.4, 1], [1.5, 0.9, 0.95], [2.5, 1.4, 0.95]],
+    chorusBass: 'quarter',
+  };
+})();
+
+// ── COMET RUSH (original). Key: D minor, 140 BPM: driving, an off-beat bass, a rolling chorus.
+const COMET_RUSH = (() => {
+  const CH = {
+    Dm: { root: 38, notes: [57, 60, 62, 65] }, // Dm7
+    C: { root: 36, notes: [55, 60, 62, 64] }, // Cadd9
+    Bb: { root: 34, notes: [53, 57, 60, 62] }, // Bbmaj9
+    A: { root: 33, notes: [57, 61, 64, 69] }, // A: the harmonic-minor dominant
+    F: { root: 41, notes: [57, 60, 65, 67] }, // Fadd9
+    Gm: { root: 31, notes: [55, 58, 62, 65] }, // Gm7
+    Am: { root: 33, notes: [57, 60, 64, 67] }, // Am7
+    BbHi: { root: 34, notes: [58, 62, 65, 69] },
+    CHi: { root: 36, notes: [60, 64, 67, 72] },
+    A7: { root: 33, notes: [55, 61, 64, 69] }, // dominant lift into the last chorus
+    DmEnd: { root: 38, notes: [53, 57, 62, 69] },
+  };
+  const PROG = {
+    intro: ['Dm', 'C', 'Bb', 'A'],
+    verse: ['Dm', 'C', 'Bb', 'A'],
+    build: ['Gm', 'Am', 'BbHi', 'CHi'],
+    chorus: ['Dm', 'Bb', 'F', 'C'],
+    bridge: ['Bb', 'C', 'Gm', 'A7'],
+    outro: ['Bb', 'C', 'Dm'],
+  };
+  const HOOK = [
+    [[0, 0.5, 81], [0.5, 0.5, 81], [1, 0.5, 79], [1.5, 1, 77], [2.5, 0.5, 74], [3, 1, 77]],
+    [[0, 0.5, 82], [0.5, 0.5, 82], [1, 0.5, 81], [1.5, 1, 77], [2.5, 0.5, 74], [3, 1, 77]],
+    [[0, 0.5, 84], [0.5, 0.5, 84], [1, 0.5, 81], [1.5, 1, 77], [2.5, 0.5, 81], [3, 1, 84]],
+    [[0, 1.5, 79], [1.5, 0.5, 76], [2, 1, 79], [3, 0.5, 81], [3.5, 0.5, 79]],
+    [[0, 0.5, 81], [0.5, 0.5, 81], [1, 0.5, 79], [1.5, 1, 77], [2.5, 0.5, 74], [3, 1, 77]],
+    [[0, 0.5, 82], [0.5, 0.5, 82], [1, 0.5, 81], [1.5, 1, 77], [2.5, 0.5, 81], [3, 1, 82]],
+    [[0, 0.5, 86], [0.5, 0.5, 84], [1, 0.5, 81], [1.5, 1, 84], [2.5, 0.5, 81], [3, 0.5, 79], [3.5, 0.5, 77]],
+    [[0, 0.75, 79], [0.75, 0.75, 76], [1.5, 0.5, 72], [2, 2, 74]],
+  ];
+  const COUNTER = [
+    [[0, 2, 86], [2, 2, 89]],
+    [[0, 2, 86], [2, 2, 89]],
+    [[0, 2, 84], [2, 2, 89]],
+    [[0, 2, 88], [2, 2, 84]],
+    [[0, 2, 86], [2, 2, 89]],
+    [[0, 2, 89], [2, 2, 86]],
+    [[0, 2, 93], [2, 2, 89]],
+    [[0, 4, 88]],
+  ];
+  const v1 = [[0.5, 0.5, 69], [1, 0.5, 74], [1.5, 1, 77], [2.5, 0.5, 76], [3, 1, 74]];
+  const v2 = [[0.5, 0.5, 67], [1, 0.5, 72], [1.5, 1, 76], [2.5, 0.5, 74], [3, 1, 72]];
+  const v3 = [[0.5, 0.5, 65], [1, 0.5, 70], [1.5, 1, 74], [2.5, 0.5, 72], [3, 1, 70]];
+  const VERSE_MEL = [
+    v1, v2, v3,
+    [[0.5, 0.5, 64], [1, 0.5, 69], [1.5, 1, 73], [2.5, 0.5, 76], [3, 0.5, 73], [3.5, 0.5, 69]],
+    v1, v2, v3,
+    [[0.5, 0.5, 64], [1, 0.5, 69], [1.5, 1, 73], [2.5, 1.5, 76]],
+  ];
+  const BRIDGE_MEL = [
+    [[0, 1.5, 77], [1.5, 0.5, 74], [2, 2, 70]],
+    [[0, 1.5, 79], [1.5, 0.5, 76], [2, 2, 72]],
+    [[0, 1.5, 82], [1.5, 0.5, 79], [2, 2, 74]],
+    [[0, 1.5, 76], [1.5, 0.5, 73], [2, 0.5, 76], [2.5, 0.5, 81]],
+  ];
+  const INTRO_MEL = [
+    [[0, 0.75, 77], [0.75, 0.75, 74], [1.5, 0.5, 70], [2, 0.5, 74], [2.5, 0.5, 77], [3, 1, 82]],
+    [[0, 1.5, 76], [1.5, 0.5, 73], [2, 2, 69]],
+  ];
+  return {
+    CH, PROG, HOOK, COUNTER, VERSE_MEL, BRIDGE_MEL, INTRO_MEL,
+    outroMel: [HOOK[0], HOOK[3], HOOK[0]], endChord: 'DmEnd', endBells: [[74, 0.6], [81, 0.5], [86, 0.35]],
+    pluckSteps: [0, 2, 4, 6, 8, 10, 12, 14], pluckOrder: [0, 1, 2, 3, 2, 1, 2, 3],
+    verseKick: [0, 1, 2, 3],
+    verseBass: [[0.5, 0.4, 0, 1], [1.5, 0.4, 0, 1], [2.5, 0.4, 0, 1], [3.5, 0.4, 12, 0.9, false]],
+    chorusKick: [0, 1, 2, 3],
+    chorusHits: [[0, 0.7, 1], [0.75, 0.7, 0.9], [1.5, 0.9, 1], [2.5, 0.7, 0.95], [3.25, 0.7, 0.9]],
+    chorusBass: 'sixteenth',
+  };
+})();
+
+const MATERIAL = { starfall: STARFALL, moondrift: MOON_DRIFT, cometrush: COMET_RUSH };
+
 // Which calibrated stem each event type feeds.
 const STEM_OF = {
   kick: 'kick', snare: 'snare', clap: 'snare', hat: 'hats', bass: 'bass', saw: 'chords', pad: 'pad',
@@ -165,7 +327,16 @@ const VOICE_TAIL = {
  * Build the whole arrangement as plain event data (pure; runs in Node).
  * Event: { type, b (beat, may be slightly negative in the lead-in), len (beats), vel, ... }.
  */
-export function buildArrangement() {
+export function buildArrangement(songId = DEFAULT_SONG) {
+  const tm = timingOf(songById(songId) || SONGS[DEFAULT_SONG]);
+  const M = MATERIAL[tm.song.id] || STARFALL;
+  // (these shadow the STARFALL tables above: the body below is written against "the song")
+  // eslint-disable-next-line no-shadow
+  const { CH, PROG, HOOK, COUNTER, VERSE_MEL, BRIDGE_MEL, INTRO_MEL } = M;
+  const SONG = tm.song;
+  const BPB = tm.beatsPerBar;
+  const SPB = tm.spb;
+  const beatToSec = tm.beatToSec;
   const ev = [];
   const add = (type, b, o) => ev.push(Object.assign({ type, b, len: 0.25, vel: 1 }, o));
   const sections = {};
@@ -179,15 +350,17 @@ export function buildArrangement() {
     for (let k = 0; k < 8; k++) add('hat', b0 + k * 0.5, { vel: k % 2 ? off : on });
   };
   const verseBass = (b0, root, vel) => {
-    add('bass', b0, { len: 1.0, m: root, vel });
-    add('bass', b0 + 1.5, { len: 0.5, m: root, vel: vel * 0.9 });
-    add('bass', b0 + 2.5, { len: 0.75, m: root, vel });
-    add('bass', b0 + 3.5, { len: 0.4, m: root + 12, vel: vel * 0.85, sub: false });
+    for (const [p, len, up, v, sub] of M.verseBass) {
+      const o = { len, m: root + up, vel: vel * v };
+      if (sub === false) o.sub = false;
+      add('bass', b0 + p, o);
+    }
   };
-  const plucks = (b0, notes, vel, steps = 6, octaveLayer = false) => {
+  const PLUCKS = M.pluckSteps.length;
+  const plucks = (b0, notes, vel, steps = PLUCKS, octaveLayer = false) => {
     for (let k = 0; k < steps; k++) {
-      const m = notes[PLUCK_ORDER[k]] + 12;
-      const b = b0 + PLUCK_STEPS[k] * 0.25;
+      const m = notes[M.pluckOrder[k]] + 12;
+      const b = b0 + M.pluckSteps[k] * 0.25;
       add('pluck', b, { m, vel: vel * (k % 2 ? 0.75 : 1), pan: k % 2 ? 0.35 : -0.35 });
       if (octaveLayer) add('pluck', b, { m: m + 12, vel: vel * 0.38, pan: k % 2 ? -0.5 : 0.5 });
     }
@@ -229,7 +402,9 @@ export function buildArrangement() {
       const c = CH[PROG.verse[i % 4]];
       const b0 = S + i * 4;
       const last = i === 7;
-      for (let k = 0; k < 4; k++) if (!(variantB && last && k === 3)) add('kick', b0 + k, { vel: 0.92 });
+      M.verseKick.forEach((p, k, a) => {
+        if (!(variantB && last && k === a.length - 1)) add('kick', b0 + p, { vel: 0.92 });
+      });
       if (variantB || i >= 4) {
         add('clap', b0 + 1, { vel: 0.8 });
         add('clap', b0 + 3, { vel: 0.8 });
@@ -243,7 +418,7 @@ export function buildArrangement() {
       } else hats8(b0, 0.3, 0.55);
       verseBass(b0, c.root, 0.9);
       add('pad', b0, { len: 4, notes: c.notes, vel: 0.5 });
-      plucks(b0, c.notes, variantB ? 0.85 : 0.8, 6, variantB);
+      plucks(b0, c.notes, variantB ? 0.85 : 0.8, PLUCKS, variantB);
     }
     if (variantB) {
       melody('bell', S, VERSE_MEL, 0.7);
@@ -275,7 +450,7 @@ export function buildArrangement() {
       } else {
         for (let s = 0; s < (i === 3 ? 14 : 16); s++) add('hat', b0 + s * 0.25, { vel: vAt(b0) * (s % 2 ? 0.35 : 0.6) });
       }
-      plucks(b0, c.notes, 0.7 + 0.08 * i, i === 3 ? 5 : 6, i >= 2);
+      plucks(b0, c.notes, 0.7 + 0.08 * i, i === 3 ? PLUCKS - 1 : PLUCKS, i >= 2);
     });
     // snare roll: 2&4 -> quarters -> 8ths -> 16ths -> 32nds, then half a beat of air
     add('clap', S + 1, { vel: 0.7 });
@@ -297,7 +472,7 @@ export function buildArrangement() {
     for (let i = 0; i < 8; i++) {
       const c = CH[PROG.chorus[i % 4]];
       const b0 = S + i * 4;
-      for (let k = 0; k < 4; k++) add('kick', b0 + k, { vel: 1 });
+      for (const p of M.chorusKick) add('kick', b0 + p, { vel: 1 });
       if (second && i % 2 === 1) add('kick', b0 + 3.75, { vel: 0.7 });
       for (const k of [1, 3]) {
         add('clap', b0 + k, { vel: 0.9 });
@@ -307,13 +482,24 @@ export function buildArrangement() {
         if (s % 4 === 2) add('hat', b0 + s * 0.25, { vel: 0.5, open: true });
         else add('hat', b0 + s * 0.25, { vel: [0.55, 0.22, 0, 0.3][s % 4] });
       }
-      const hits = [[0, 1.4, 1], [1.5, 0.9, 1], [2.5, 1.4, 0.95]];
+      const hits = M.chorusHits;
       for (const [p, len, vel] of hits) {
         add('saw', b0 + p, { len, notes: c.notes, vel });
         add('bass', b0 + p, { len: len + 0.05, m: c.root, vel: 1, mid: false });
       }
-      for (let k = 0; k < 8; k++) {
-        add('bass', b0 + k * 0.5, { len: 0.42, m: c.root + (k === 7 ? 12 : 0), vel: k % 2 ? 1 : 0.6, sub: false });
+      if (M.chorusBass === 'quarter') {
+        // a soft off-beat bounce
+        for (let k = 0; k < 4; k++) add('bass', b0 + k + 0.5, { len: 0.45, m: c.root + (k === 3 ? 12 : 0), vel: 0.9, sub: false });
+      } else if (M.chorusBass === 'sixteenth') {
+        // rolling 16ths around the kick, which keeps the beat to itself
+        for (let q = 0; q < 16; q++) {
+          if (q % 4 === 0) continue;
+          add('bass', b0 + q * 0.25, { len: 0.2, m: c.root + (q === 15 ? 12 : 0), vel: [0, 0.7, 1, 0.8][q % 4], sub: false });
+        }
+      } else {
+        for (let k = 0; k < 8; k++) {
+          add('bass', b0 + k * 0.5, { len: 0.42, m: c.root + (k === 7 ? 12 : 0), vel: k % 2 ? 1 : 0.6, sub: false });
+        }
       }
       if (i === 7) {
         add('snare', b0 + 3.25, { vel: 0.6 });
@@ -378,7 +564,7 @@ export function buildArrangement() {
       add('pad', b0, { len: 4, notes: c.notes, vel: 0.8 });
       add('bass', b0, { len: 3.5, m: c.root, vel: 0.8, midVel: 0.6 });
     });
-    const outroMel = [HOOK[0], HOOK[1], HOOK[0]];
+    const outroMel = M.outroMel;
     melody('bell', S, outroMel, 0.65);
     melody('pluck', S, outroMel, 0.7, { pan: 0 });
     add('swell', S + 10, { len: 2, vel: 0.55 });
@@ -386,10 +572,11 @@ export function buildArrangement() {
     add('impact', F, { vel: 1 });
     add('crash', F, { vel: 0.8 });
     add('kick', F, { vel: 1 });
-    add('saw', F, { len: 3.6, notes: CH.FmEnd.notes, vel: 0.9, sustain: true });
-    add('pad', F, { len: 4, notes: CH.FmEnd.notes, vel: 0.8 });
-    add('bass', F, { len: 3, m: CH.FmEnd.root, vel: 1 });
-    for (const [m, v] of [[77, 0.6], [84, 0.5], [89, 0.35]]) add('bell', F, { len: 3, m, vel: v });
+    const END = CH[M.endChord];
+    add('saw', F, { len: 3.6, notes: END.notes, vel: 0.9, sustain: true });
+    add('pad', F, { len: 4, notes: END.notes, vel: 0.8 });
+    add('bass', F, { len: 3, m: END.root, vel: 1 });
+    for (const [m, v] of M.endBells) add('bell', F, { len: 3, m, vel: v });
   }
 
   const events = ev.filter((e) => e.vel > 0.001).sort((a, b) => a.b - b.b);
@@ -416,7 +603,7 @@ export function buildArrangement() {
   };
   for (const k of Object.keys(curves)) curves[k] = curves[k].map(([b, v]) => ({ t: beatToSec(b), v }));
 
-  return { events, kicks, curves };
+  return { events, kicks, curves, tm };
 }
 
 // ───────────────────────────────────────────────────────────── shared generated buffers
@@ -488,7 +675,7 @@ function gate(p, t, dur, peak, a, rel, sus = 1, dec = 0.1) {
   return t + d + rel * 7; // time at which the voice may be stopped
 }
 
-function createGraph(ctx, shared, gains, seed) {
+function createGraph(ctx, shared, gains, seed, SPB) {
   const rnd = mulberry32(seed);
   const gain = (v) => {
     const g = ctx.createGain();
@@ -1007,7 +1194,7 @@ function renderRange(arr, shared, { t0, t1, len, gains, seed, only }) {
   const Ctor = getOfflineCtor();
   const frames = Math.max(1, Math.ceil(len * SR));
   const ctx = new Ctor(2, frames, SR);
-  const G = createGraph(ctx, shared, gains, seed);
+  const G = createGraph(ctx, shared, gains, seed, arr.tm.spb);
   scheduleCurve(G.chordCutoff, arr.curves.chordCutoff, t0, len);
   scheduleCurve(G.padCutoff, arr.curves.padCutoff, t0, len);
   for (const name of Object.keys(G.ducks)) scheduleDuck(G.ducks[name].gain, MIX.duckFloor[name], arr.kicks, t0, len);
@@ -1024,6 +1211,7 @@ function renderRange(arr, shared, { t0, t1, len, gains, seed, only }) {
 
 /** Section-aligned render chunks (global seconds, sample-quantised). */
 export function planChunks(arr) {
+  const { song: SONG, beatToSec, beatsPerBar: BPB, duration: SONG_DURATION } = arr.tm;
   const q = (t) => Math.round(t * SR) / SR;
   const starts = SONG.sections.map((s, i) => (i === 0 ? 0 : q(beatToSec(s.startBar * BPB) - CHUNK_PREROLL)));
   return starts.map((t0, i) => {
@@ -1067,6 +1255,7 @@ function measure(buffer) {
 
 /** Solo-render short excerpts of each stem and derive stem gains that hit MIX.targets. */
 async function calibrate(arr, shared, limit, onStep) {
+  const { beatToSec, beatsPerBar: BPB } = arr.tm;
   const names = Object.keys(MIX.targets);
   const gains = Object.assign({}, MIX.stems);
   const report = {};
@@ -1236,7 +1425,7 @@ function peakOf(L, R) {
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
 /** Full offline production: calibrate -> render chunks -> overlap-add -> master. */
-async function produceTrack(onProgress) {
+async function produceTrack(onProgress, songId) {
   if (!getOfflineCtor()) throw new Error('OfflineAudioContext is not supported in this browser');
   const report = (p, label) => {
     if (onProgress) {
@@ -1249,7 +1438,7 @@ async function produceTrack(onProgress) {
   };
   const t00 = typeof performance !== 'undefined' ? performance.now() : Date.now();
   report(0, '음악 합성 준비 중');
-  const arr = buildArrangement();
+  const arr = buildArrangement(songId);
   const shared = { noise: makeNoiseData(2.0, 0xc0ffee), ir: makeImpulseData(), kickCurve: makeTanhCurve(1.6) };
   const cores = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
   const limit = clamp(cores - 1, 2, 4);
@@ -1266,7 +1455,7 @@ async function produceTrack(onProgress) {
   }
 
   // 2) chunk renders, overlap-added into the full-length mix
-  const N = Math.ceil(SONG_DURATION * SR);
+  const N = Math.ceil(arr.tm.duration * SR);
   const L = new Float32Array(N);
   const R = new Float32Array(N);
   const chunks = planChunks(arr);
@@ -1308,7 +1497,7 @@ async function produceTrack(onProgress) {
     peak: peakOf(L, R), sampleRate: SR,
   };
   report(1, '준비 완료');
-  return { L, R, kicks: arr.kicks, stats };
+  return { L, R, kicks: arr.kicks, stats, tm: arr.tm };
 }
 
 // ───────────────────────────────────────────────────────────── SFX (live, short one-shots)
@@ -1445,6 +1634,49 @@ const SFX = {
     sfxTone(c, out, hit2, { f: SFX_HZ.F7, vel: 0.12, tc: 0.34 });
     sfxTone(c, out, hit2, { f: SFX_HZ.C8, vel: 0.035, tc: 0.3 });
   },
+  // ── STAR SLASH cuts. One lands on almost every beat (the dance ratings only every other
+  // one), so they are shorter and lighter than the ratings above: a blade of air, then a
+  // crystal note in key with one quiet inharmonic partial (x2.76, what makes a struck glass
+  // sound like glass). The ladder is the same idea: GOOD < PERFECT < gold add notes and ring.
+  // GOOD cut: the blade and a single glass "tink" on the fifth.
+  slash(c, out, t, nb) {
+    sfxNoise(c, out, nb, t, { vel: 0.2, hp: 2200, f2: 7000, glide: 0.05, tc: 0.022, type: 'bandpass', q: 1.1, a: 0.004 });
+    sfxTone(c, out, t, { f: 300, f2: 140, glide: 0.04, vel: 0.1, tc: 0.03, a: 0.002 });
+    sfxTone(c, out, t + 0.006, { f: SFX_HZ.C6, vel: 0.13, tc: 0.045, a: 0.002 });
+    sfxTone(c, out, t + 0.006, { f: SFX_HZ.C6 * 2.76, vel: 0.03, tc: 0.02, a: 0.001 });
+  },
+  // PERFECT cut: a sharper blade, two crystal notes a fifth apart (root, then the fifth above,
+  // which sings on a little) and a breath of sparkle.
+  slashPerfect(c, out, t, nb) {
+    sfxNoise(c, out, nb, t, { vel: 0.26, hp: 2600, f2: 9000, glide: 0.045, tc: 0.02, type: 'bandpass', q: 1.2, a: 0.003 });
+    sfxTone(c, out, t, { f: 320, f2: 120, glide: 0.05, vel: 0.14, tc: 0.035, a: 0.002 });
+    sfxTone(c, out, t + 0.005, { f: SFX_HZ.F6, vel: 0.13, tc: 0.06, a: 0.002 });
+    sfxTone(c, out, t + 0.005, { f: SFX_HZ.F6 * 2.76, vel: 0.03, tc: 0.025, a: 0.001 });
+    sfxTone(c, out, t + 0.04, { f: SFX_HZ.C7, vel: 0.12, tc: 0.11, a: 0.002 });
+    sfxTone(c, out, t + 0.04, { f: SFX_HZ.C7 * 1.005, type: 'triangle', vel: 0.035, tc: 0.13 });
+    sfxNoise(c, out, nb, t + 0.03, { vel: 0.035, hp: 9000, tc: 0.07, a: 0.02 });
+  },
+  // GOLD shard cut: the blade, an impact, the crystal chord breaking upward and a glitter tail.
+  slashGold(c, out, t, nb) {
+    sfxNoise(c, out, nb, t, { vel: 0.3, hp: 2000, f2: 9000, glide: 0.06, tc: 0.03, type: 'bandpass', q: 1.0, a: 0.003 });
+    sfxTone(c, out, t, { f: 200, f2: 52, glide: 0.1, vel: 0.26, tc: 0.09, a: 0.002 });
+    const run = [SFX_HZ.F6, SFX_HZ.Ab6, SFX_HZ.C7, SFX_HZ.F7];
+    run.forEach((f, i) => {
+      const at = t + 0.01 + i * 0.038;
+      sfxTone(c, out, at, { f, vel: 0.12, tc: 0.12 + i * 0.03 });
+      sfxTone(c, out, at, { f: f * 2.76, vel: 0.02, tc: 0.03, a: 0.001 });
+    });
+    sfxTone(c, out, t + 0.16, { f: SFX_HZ.F7 * 1.005, type: 'triangle', vel: 0.05, tc: 0.4 });
+    sfxTone(c, out, t + 0.16, { f: SFX_HZ.C8, vel: 0.035, tc: 0.35 });
+    sfxNoise(c, out, nb, t + 0.1, { vel: 0.06, hp: 9000, tc: 0.25, a: 0.12 });
+  },
+  // BAD cut (wrong direction / wrong hand): a dull double crack and a short sag. No ring, no air.
+  slashBad(c, out, t, nb) {
+    sfxNoise(c, out, nb, t, { vel: 0.4, hp: 1400, tc: 0.012, type: 'bandpass', q: 2.5 });
+    sfxNoise(c, out, nb, t + 0.022, { vel: 0.25, hp: 900, tc: 0.016, type: 'bandpass', q: 2.5 });
+    sfxTone(c, out, t, { f: SFX_HZ.Ab5 / 4, f2: SFX_HZ.F5 / 4, glide: 0.09, type: 'triangle', vel: 0.16, tc: 0.05, a: 0.003, lp: 800 });
+    sfxTone(c, out, t, { f: 130, f2: 70, glide: 0.08, vel: 0.14, tc: 0.045, a: 0.003 });
+  },
   ui(c, out, t) {
     sfxTone(c, out, t, { f: 1568, f2: 2093, glide: 0.03, type: 'triangle', vel: 0.11, tc: 0.022, a: 0.002 });
   },
@@ -1526,9 +1758,15 @@ export const SFX_KIT = { SFX, SFX_BUS, createSfxBus, startSfxVoice };
 export function createMusic() {
   let ctx = null;
   let initPromise = null;
+  // the song that is loaded for playback, and every song rendered so far
   let buffer = null;
   let kicks = [];
   let stats = null;
+  let tm = timingOf(SONGS[DEFAULT_SONG]);
+  let songId = null;
+  const tracks = {}; // id -> { id, buffer, kicks, stats, tm }
+  const pending = {}; // id -> { promise, listeners } while its render is queued or running
+  let chain = Promise.resolve(); // renders run one at a time
   let ready = false;
 
   let masterGain = null;
@@ -1576,7 +1814,7 @@ export function createMusic() {
   function rawPos() {
     if (state === 'playing') return Math.max(posFloor, offset + (ctxNow() - startAt));
     if (state === 'paused') return pausedPos;
-    if (state === 'ended') return SONG_DURATION + latency();
+    if (state === 'ended') return tm.duration + latency();
     return 0;
   }
 
@@ -1722,7 +1960,7 @@ export function createMusic() {
      * Create the AudioContext (call from a user gesture when possible) and render the track.
      * onProgress(fraction 0..1, koreanLabel) is optional. Safe to call more than once.
      */
-    init(onProgress) {
+    init(onProgress, id) {
       if (initPromise) return initPromise;
       initPromise = (async () => {
         const AC = globalThis.AudioContext || globalThis.webkitAudioContext;
@@ -1739,16 +1977,70 @@ export function createMusic() {
           }
         }
         buildLiveGraph();
-        const track = await produceTrack(onProgress);
-        buffer = makeBuffer(ctx, [track.L, track.R]);
-        kicks = track.kicks;
-        stats = track.stats;
+        const first = (songById(id) || SONGS[DEFAULT_SONG]).id;
+        await api.prepare(first, onProgress);
+        api.use(first);
         ready = true;
       })();
       initPromise.catch(() => {
         initPromise = null; // allow a retry after a failure
       });
       return initPromise;
+    },
+
+    /**
+     * Render a song's track (once) and keep it. Renders are queued, one at a time; asking again
+     * for a song that is already queued just adds the progress listener. Resolves when the song
+     * can be handed to use(). Needs init() to have created the audio context.
+     */
+    prepare(id, onProgress) {
+      const s = songById(id) || SONGS[DEFAULT_SONG];
+      if (tracks[s.id]) return Promise.resolve(true);
+      if (!ctx) return Promise.reject(new Error('audio engine is not initialised'));
+      let entry = pending[s.id];
+      if (!entry) {
+        entry = pending[s.id] = { listeners: [], promise: null };
+        const tell = (p, label) => {
+          for (const f of entry.listeners.slice()) f(p, label); // (produceTrack guards the call)
+        };
+        const run = async () => {
+          const track = await produceTrack(tell, s.id);
+          tracks[s.id] = { id: s.id, buffer: makeBuffer(ctx, [track.L, track.R]), kicks: track.kicks, stats: track.stats, tm: track.tm };
+          return true;
+        };
+        entry.promise = chain.then(run, run);
+        chain = entry.promise.catch(() => {});
+        const done = () => {
+          if (pending[s.id] === entry) delete pending[s.id];
+        };
+        entry.promise.then(done, done);
+      }
+      if (typeof onProgress === 'function') entry.listeners.push(onProgress);
+      return entry.promise;
+    },
+    /** Load a prepared song for playback (stops whatever is playing). False if it is not rendered. */
+    use(id) {
+      const t = tracks[id];
+      if (!t) return false;
+      if (songId !== id) {
+        if (ready && state !== 'idle') {
+          killSource(true);
+          state = 'idle';
+        }
+        buffer = t.buffer;
+        kicks = t.kicks;
+        stats = t.stats;
+        tm = t.tm;
+        songId = id;
+      }
+      return true;
+    },
+    /** True once the song's track has been rendered. */
+    has(id) {
+      return !!tracks[id];
+    },
+    get songId() {
+      return songId;
     },
 
     /** Begin playback from the top (optionally from `fromSec` for auditioning). */
@@ -1777,13 +2069,13 @@ export function createMusic() {
       launch(pausedPos);
     },
 
-    /** Song seconds (0 = start of the lead-in, beat 0 at SONG.leadInSec), latency compensated. */
+    /** Song seconds (0 = start of the lead-in, beat 0 at the song's leadInSec), latency compensated. */
     getTime() {
       if (!ready || state === 'idle') return 0;
-      return Math.min(SONG_DURATION, rawPos() - latency());
+      return Math.min(tm.duration, rawPos() - latency());
     },
     getBeat() {
-      return secToBeat(api.getTime());
+      return tm.secToBeat(api.getTime());
     },
 
     getLevels() {
@@ -1806,6 +2098,7 @@ export function createMusic() {
 
     /**
      * 'perfect' | 'super' | 'good' | 'ok' | 'miss' | 'gold' | 'combo' | 'ui' | 'countdown' (+ 'go').
+     * STAR SLASH cuts: 'slash' (GOOD) | 'slashPerfect' | 'slashGold' | 'slashBad'.
      * opts.player (0 | 1, optional) pans the sound toward that player's side. Any number of
      * calls may land on the same frame (two players): they are staged and limited, never clipped.
      */
@@ -1835,7 +2128,7 @@ export function createMusic() {
     },
 
     get duration() {
-      return SONG_DURATION;
+      return tm.duration;
     },
     get isPlaying() {
       return state === 'playing';
@@ -1845,7 +2138,7 @@ export function createMusic() {
     },
     /** Diagnostics for the integrator: render stats, calibrated gains, the mastered buffer. */
     get debug() {
-      return { state, stats, buffer, context: ctx, latency: latency(), kicks, totalBeats: TOTAL_BEATS };
+      return { state, stats, buffer, context: ctx, latency: latency(), kicks, totalBeats: TOTAL_BEATS, songId, songs: Object.keys(tracks) };
     },
   };
   return api;

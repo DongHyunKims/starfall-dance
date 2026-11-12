@@ -651,7 +651,7 @@ body {
   border-radius: calc(var(--u) * 0.1);
   background: var(--teal);
   transform-origin: center bottom;
-  animation: sf-eq 0.968s ease-in-out infinite;
+  animation: sf-eq calc(var(--song-beat, 0.484s) * 2) ease-in-out infinite; /* two beats of the picked song */
 }
 
 .eq i:nth-child(2) { animation-delay: -0.24s; background: var(--gold); }
@@ -2507,6 +2507,14 @@ body {
   text-shadow: 0 0 calc(var(--u) * 1.6) rgba(106, 61, 240, 0.9);
 }
 
+/* the row the stars sit in: alone in the dance mode, beside the rank letter in STAR SLASH */
+.hero {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--u) * 2.4);
+}
+
 .stars {
   display: flex;
   align-items: flex-end;
@@ -2714,7 +2722,7 @@ body {
 
 .duo { display: none; }
 
-.screen--results[data-mode="duo"] .results > .stars,
+.screen--results[data-mode="duo"] .results > .hero,
 .screen--results[data-mode="duo"] .results > .results__score,
 .screen--results[data-mode="duo"] .results > .results__grid { display: none; }
 
@@ -2871,6 +2879,784 @@ body {
   color: #ffffff;
 }
 
+/* ------------------------------------------------------------------ game modes: dance / STAR SLASH */
+
+/* js/hud.js keeps two attributes on the root. data-mode="dance|slash" is the mode the run
+   screens (camera, countdown, play, pause, results) are laid out for; data-pick="dance|slash"
+   is the title's mode switch. Everything STAR SLASH adds lives below this line: with
+   data-mode="dance" none of it shows. */
+.sf:not([data-mode="slash"]) .only-slash,
+.sf[data-mode="slash"] .only-dance,
+.sf:not([data-pick="slash"]) .pick-slash,
+.sf[data-pick="slash"] .pick-dance {
+  display: none !important;
+}
+
+/* ---- title: the mode switch, the STAR SLASH side ---- */
+
+.modeswitch {
+  position: relative;
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  width: calc(var(--u) * 25);
+  height: calc(var(--u) * 3.3);
+  margin: calc(var(--u) * -0.2) 0 calc(var(--u) * -0.5) calc(var(--u) * 0.5);
+  isolation: isolate;
+}
+
+.modeswitch::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  border-radius: calc(var(--u) * 0.5);
+  background: rgba(21, 12, 58, 0.82);
+  box-shadow: inset 0 0 0 1px rgba(190, 176, 255, 0.4);
+  transform: skewX(-12deg);
+}
+
+/* the plate under the chosen side: it slides (transform) and changes colour (two layers, opacity) */
+.modeswitch__thumb {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  z-index: -1;
+  width: 50%;
+  transform: translateX(0);
+  transition: transform 0.26s var(--ease-out);
+}
+
+.sf[data-pick="slash"] .modeswitch__thumb { transform: translateX(100%); }
+
+.modeswitch__thumb::before,
+.modeswitch__thumb::after {
+  content: "";
+  position: absolute;
+  inset: calc(var(--u) * 0.3);
+  border-radius: calc(var(--u) * 0.34);
+  transform: skewX(-12deg);
+  transition: opacity 0.2s ease;
+}
+
+.modeswitch__thumb::before {
+  background: linear-gradient(180deg, #c9fffa 0%, #19e3d2 55%, #10b9c6 100%);
+  box-shadow: 0 0 calc(var(--u) * 1.2) rgba(25, 227, 210, 0.45);
+}
+
+/* STAR SLASH: the two hand colours, parted by a bright cut line */
+.modeswitch__thumb::after {
+  background: linear-gradient(102deg, #19e3d2 0%, #6aeedd 44%, #ffffff 48.4%, #ffffff 51.6%, #ffd98a 56%, #ffc24a 100%);
+  box-shadow: 0 0 calc(var(--u) * 1.2) rgba(255, 194, 74, 0.4);
+  opacity: 0;
+}
+
+.sf[data-pick="slash"] .modeswitch__thumb::before { opacity: 0; }
+.sf[data-pick="slash"] .modeswitch__thumb::after { opacity: 1; }
+
+.modeswitch__tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--u) * 0.55);
+  min-width: 0;
+  padding: 0 calc(var(--u) * 0.8);
+  border: 0;
+  background: none;
+  color: rgba(246, 241, 255, 0.76);
+  font: 900 calc(var(--u) * 1.12) / 1 var(--font-ko);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  cursor: pointer;
+  outline: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.modeswitch__tab svg {
+  flex: 0 0 auto;
+  width: calc(var(--u) * 1.25);
+  height: calc(var(--u) * 1.25);
+}
+
+.modeswitch__tab[aria-selected="false"]:hover { color: #ffffff; }
+.modeswitch__tab[aria-selected="true"] { color: var(--ink); }
+
+.modeswitch__tab:focus-visible {
+  border-radius: calc(var(--u) * 0.5);
+  outline: calc(var(--u) * 0.16) solid #ffffff;
+  outline-offset: calc(var(--u) * -0.46);
+}
+
+.modeswitch__key,
+.levels__key {
+  padding: calc(var(--u) * 0.28) calc(var(--u) * 0.55);
+  border-radius: calc(var(--u) * 0.3);
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(246, 241, 255, 0.7);
+  font: 600 calc(var(--u) * 0.62) / 1 var(--font-display);
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+}
+
+.modeswitch__key {
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  margin: calc(var(--u) * -0.6) 0 0 calc(var(--u) * 1.1);
+}
+
+/* switching sides is not an entrance: what appears comes up at once */
+.sf[data-screen="title"] .screen--title.is-picked .title__col > *,
+.sf[data-screen="title"] .screen--title.is-picked .howto > li {
+  animation-duration: 0.3s;
+  animation-delay: 0s;
+}
+
+/* start + demo side by side, the difficulty on its own line below */
+.levels {
+  flex: 0 0 100%;
+  display: flex;
+  align-items: center;
+  gap: calc(var(--u) * 0.8);
+  padding-left: calc(var(--u) * 0.2);
+}
+
+.levels__label {
+  margin-right: calc(var(--u) * 0.2);
+  font-size: calc(var(--u) * 0.9);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--muted);
+}
+
+.levels__key { margin-left: calc(var(--u) * 0.3); }
+
+.level {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--u) * 0.6);
+  height: calc(var(--u) * 2.7);
+  padding: 0 calc(var(--u) * 1.3) 0 calc(var(--u) * 1.1);
+  border: 0;
+  background: none;
+  color: #ffffff;
+  font: 900 calc(var(--u) * 1.02) / 1 var(--font-ko);
+  white-space: nowrap;
+  cursor: pointer;
+  outline: none;
+  isolation: isolate;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* one colour per difficulty: the pips, the hover outline and the plate of the chosen one */
+.level--easy { --lc: var(--teal); }
+.level--normal { --lc: var(--gold); }
+.level--hard { --lc: #ff7d8d; }
+
+.level::before,
+.level::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: calc(var(--u) * 0.4);
+  transform: skewX(-12deg);
+}
+
+.level::before {
+  background: rgba(11, 6, 32, 0.45);
+  box-shadow: inset 0 0 0 calc(var(--u) * 0.08) rgba(190, 176, 255, 0.5);
+}
+
+.level::after {
+  background: var(--lc);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.level:hover::before { box-shadow: inset 0 0 0 calc(var(--u) * 0.12) var(--lc); }
+
+.level:focus-visible::before {
+  outline: calc(var(--u) * 0.16) solid #ffffff;
+  outline-offset: calc(var(--u) * 0.2);
+}
+
+.level.is-on { color: var(--ink); }
+.level.is-on::after { opacity: 1; }
+
+/* one, two, three shards */
+.level__pips {
+  display: inline-flex;
+  gap: calc(var(--u) * 0.28);
+}
+
+.level__pips i {
+  width: calc(var(--u) * 0.44);
+  height: calc(var(--u) * 0.44);
+  background: var(--lc);
+  transform: rotate(45deg);
+}
+
+.level.is-on .level__pips i { background: var(--ink); }
+
+/* the title's song picker: the same plates, two lines each (the song, then difficulty · tempo) */
+.levels.songs {
+  flex: 0 0 auto;
+  gap: calc(var(--u) * 0.9);
+  padding-left: 0;
+}
+
+.songs .level {
+  height: calc(var(--u) * 3.5);
+  padding: 0 calc(var(--u) * 1.5) 0 calc(var(--u) * 1.25);
+  gap: calc(var(--u) * 0.8);
+}
+
+.level__text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: calc(var(--u) * 0.34);
+}
+
+.level__text b {
+  font: 800 calc(var(--u) * 1) / 1 var(--font-display);
+  letter-spacing: 0.02em;
+}
+
+.level__text small {
+  font: 700 calc(var(--u) * 0.7) / 1 var(--font-ko);
+  letter-spacing: 0.02em;
+  opacity: 0.8;
+}
+
+/* ---- camera setup in STAR SLASH: same flow as one-player dance, the copy is about the hands ---- */
+
+.sf[data-mode="slash"] .modepill {
+  background: linear-gradient(100deg, rgba(25, 227, 210, 0.34), rgba(255, 194, 74, 0.4));
+}
+
+.handdot {
+  flex: 0 0 auto;
+  width: calc(var(--u) * 0.8);
+  height: calc(var(--u) * 0.8);
+  border-radius: 50%;
+  background: var(--teal);
+  box-shadow: 0 0 calc(var(--u) * 0.6) rgba(25, 227, 210, 0.8);
+}
+
+.handdot--r {
+  background: var(--gold);
+  box-shadow: 0 0 calc(var(--u) * 0.6) rgba(255, 194, 74, 0.8);
+}
+
+/* ---- STAR SLASH play HUD ----
+   The middle of the screen belongs to the incoming shards: js/slash/view.js keeps the 4 x 3 hit
+   grid between 25% and 85% of the screen height, so everything that stays up lives in the top
+   band and ends at 12.7u, which is 22.6% of the height at 16:9 and wider and less on narrower
+   screens (1u = 1% of a 16:9 box). Left: score, multiplier ring and combo (3-24u). Centre: the
+   song bar as in the dance mode (33-67u, down to 6u). Right: the accuracy (76-82.6u, down to
+   7.4u) beside a small camera panel (83.4-97.4u). The how-to line sits at the bottom centre
+   (50.7-53.7u, below the grid) for the first seconds only. No pictogram lane, no sync meter, no
+   edge wash, no big rating burst. */
+.sf[data-mode="slash"] .lane,
+.sf[data-mode="slash"] .edge,
+.sf[data-mode="slash"] .rating,
+.sf[data-mode="slash"] .pcam,
+.sf[data-mode="slash"] .fly,
+.sf[data-mode="slash"] .scorebox--p1,
+.sf[data-mode="slash"] .livecard,
+.sf[data-mode="slash"] .combo__mult,
+.sf[data-mode="slash"] .tile__sync,
+.sf[data-mode="slash"] .tile .legend {
+  display: none;
+}
+
+/* top-left: SCORE / digits, then the ring with the combo counter beside it */
+.sf[data-mode="slash"] .scorebox--p0 {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-areas: "head head" "score score" "ring combo";
+  justify-items: start;
+  align-items: center;
+  column-gap: calc(var(--u) * 1.2);
+}
+
+.sf[data-mode="slash"] .scorebox__head { grid-area: head; }
+.sf[data-mode="slash"] .scorebox__score { grid-area: score; }
+
+/* multiplier ring: x1 .. x4 in the middle, eight segments around it, one per hit of the step */
+.mring {
+  --mc: #cfc6ff;
+  display: none;
+  position: relative;
+  grid-area: ring;
+  width: calc(var(--u) * 5);
+  height: calc(var(--u) * 5);
+  margin-top: calc(var(--u) * 0.9);
+  will-change: transform, opacity;
+}
+
+.sf[data-mode="slash"] .mring { display: block; }
+
+.mring[data-mult="2"] { --mc: var(--teal); }
+.mring[data-mult="3"] { --mc: var(--gold); }
+.mring[data-mult="4"] { --mc: var(--gold-hot); }
+
+.mring::before {
+  content: "";
+  position: absolute;
+  inset: calc(var(--u) * 0.55);
+  border-radius: 50%;
+  background: rgba(11, 6, 32, 0.6);
+}
+
+.sf .mring__svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  fill: none;
+  stroke-width: 4.4;
+  stroke-linecap: round;
+  will-change: transform;
+}
+
+.mring__track { stroke: rgba(246, 241, 255, 0.2); }
+.mring__lit { stroke: var(--mc); }
+
+.mring__lit path {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.mring[data-fill="1"] .mring__lit path:nth-child(-n+1),
+.mring[data-fill="2"] .mring__lit path:nth-child(-n+2),
+.mring[data-fill="3"] .mring__lit path:nth-child(-n+3),
+.mring[data-fill="4"] .mring__lit path:nth-child(-n+4),
+.mring[data-fill="5"] .mring__lit path:nth-child(-n+5),
+.mring[data-fill="6"] .mring__lit path:nth-child(-n+6),
+.mring[data-fill="7"] .mring__lit path:nth-child(-n+7),
+.mring[data-fill="8"] .mring__lit path:nth-child(-n+8) {
+  opacity: 1;
+}
+
+/* the top multiplier: the full ring glows */
+.mring.is-max .mring__svg { filter: drop-shadow(0 0 calc(var(--u) * 0.5) rgba(255, 194, 74, 0.95)); }
+
+.mring__num {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: 800 calc(var(--u) * 1.5) / 1 var(--font-display);
+  letter-spacing: -0.03em;
+  color: var(--mc);
+  text-shadow: 0 calc(var(--u) * 0.1) 0 rgba(11, 6, 32, 0.8);
+}
+
+/* bursts outward when the multiplier steps up */
+.mring__burst {
+  position: absolute;
+  inset: calc(var(--u) * 0.2);
+  border-radius: 50%;
+  border: calc(var(--u) * 0.24) solid var(--mc);
+  opacity: 0;
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+
+/* the combo counter loses its plate here: the ring is the anchor, the number stands beside it */
+.sf[data-mode="slash"] .combo {
+  grid-area: combo;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: calc(var(--u) * 0.35);
+  margin-top: calc(var(--u) * 0.9);
+  padding: 0;
+  border-left: 0;
+  border-radius: 0;
+  background: none;
+}
+
+.sf[data-mode="slash"] .combo__burst { top: calc(var(--u) * 1.25); }
+
+/* the milestone banner (showCombo) comes up beside the corner, inside the top band (25-38u) */
+.sf[data-mode="slash"] .cbanner {
+  left: calc(var(--u) * 25);
+  top: calc(var(--u) * 7.5);
+}
+
+/* top-right: the "나" panel at about two thirds of its dance size, neutral frame (teal and
+   amber are the two hands here), the accuracy on a small plate to its left */
+.sf[data-mode="slash"] .tile {
+  width: calc(var(--u) * 14);
+  gap: calc(var(--u) * 0.6);
+}
+
+.sf[data-mode="slash"] .tile__view {
+  height: calc(var(--u) * 10.5);
+  border-radius: calc(var(--u) * 0.4) calc(var(--u) * 1.2) calc(var(--u) * 0.4) calc(var(--u) * 1.2);
+  box-shadow:
+    0 0 0 calc(var(--u) * 0.12) rgba(207, 198, 255, 0.7),
+    0 calc(var(--u) * 0.6) calc(var(--u) * 1.8) rgba(0, 0, 0, 0.45);
+}
+
+.sf[data-mode="slash"] .tile__tag {
+  left: calc(var(--u) * 0.5);
+  top: calc(var(--u) * 0.5);
+  gap: calc(var(--u) * 0.4);
+  padding: calc(var(--u) * 0.24) calc(var(--u) * 0.5);
+  color: #ffffff;
+}
+
+.sf[data-mode="slash"] .tile.is-demo .tile__tag { color: var(--gold); }
+.sf[data-mode="slash"] .tile:not(.is-demo) .tile__tag b { font-size: calc(var(--u) * 0.86); }
+
+.sf[data-mode="slash"] .tile__warn {
+  padding: calc(var(--u) * 0.4) calc(var(--u) * 0.7);
+  font-size: calc(var(--u) * 0.84);
+}
+
+/* no camera and nothing to draw (a demo): the panel says what it is for */
+.tile__off {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--u) * 0.4);
+  padding: calc(var(--u) * 1.8) calc(var(--u) * 0.8) calc(var(--u) * 0.6);
+  text-align: center;
+}
+
+.sf[data-mode="slash"] .tile.is-empty .tile__off { display: flex; }
+
+.tile__off b {
+  font: 900 calc(var(--u) * 0.92) / 1.2 var(--font-ko);
+  color: var(--gold);
+}
+
+.tile__off i {
+  font: 500 calc(var(--u) * 0.7) / 1.4 var(--font-ko);
+  font-style: normal;
+  word-break: keep-all;
+  color: rgba(246, 241, 255, 0.72);
+}
+
+.sacc {
+  position: absolute;
+  right: calc(100% + var(--u) * 0.8);
+  top: 0;
+  display: none;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: calc(var(--u) * 0.45);
+  width: calc(var(--u) * 6.6);
+  padding: calc(var(--u) * 0.7) calc(var(--u) * 0.8) calc(var(--u) * 0.8) calc(var(--u) * 1);
+  border-radius: calc(var(--u) * 0.35) calc(var(--u) * 1.2) calc(var(--u) * 0.35) calc(var(--u) * 0.35);
+  background: rgba(21, 12, 58, 0.84);
+  box-shadow: inset 0 0 0 1px rgba(190, 176, 255, 0.3), inset calc(var(--u) * 0.24) 0 0 var(--violet-soft);
+}
+
+.sf[data-mode="slash"] .sacc { display: flex; }
+
+.sacc__label {
+  font-size: calc(var(--u) * 0.78);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.sacc__num {
+  font: 800 calc(var(--u) * 1.6) / 1 var(--font-display);
+  letter-spacing: -0.02em;
+  color: #ffffff;
+  font-variant-numeric: tabular-nums;
+}
+
+.sacc__bar {
+  align-self: stretch;
+  height: calc(var(--u) * 0.36);
+  border-radius: calc(var(--u) * 0.2);
+  background: rgba(255, 255, 255, 0.15);
+  overflow: hidden;
+  transform: skewX(-24deg);
+}
+
+.sacc__bar i {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, var(--teal), var(--gold));
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 0.3s var(--ease-out);
+  will-change: transform;
+}
+
+/* rating pops (slashPop): a pool of small nodes. The anchor is moved to the cut with a
+   transform; the body sits just above that point and plays a short motion (js/hud.js). */
+.spops {
+  position: absolute;
+  inset: 0;
+  display: none;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.sf[data-mode="slash"] .spops { display: block; }
+
+.sf [data-rating="bad"] { --rc: #ff5a6e; }
+
+.spop {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  will-change: transform;
+}
+
+.spop__body {
+  position: absolute;
+  left: 0;
+  bottom: calc(var(--u) * 1.5);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(var(--u) * 0.2);
+  white-space: nowrap;
+  opacity: 0;
+  transform: translate(-50%, 0);
+  will-change: transform, opacity;
+}
+
+.spop__word {
+  font: 900 calc(var(--u) * 1.5) / 1 var(--font-display);
+  letter-spacing: -0.02em;
+  color: var(--rc);
+  -webkit-text-stroke: calc(var(--u) * 0.1) rgba(11, 6, 32, 0.9);
+  paint-order: stroke fill;
+  text-shadow:
+    0 0 calc(var(--u) * 0.8) var(--rc),
+    0 calc(var(--u) * 0.12) 0 rgba(11, 6, 32, 0.9);
+  transform: skewX(-8deg);
+}
+
+.spop__pts {
+  font: 800 calc(var(--u) * 0.92) / 1 var(--font-display);
+  color: #ffffff;
+  text-shadow: 0 calc(var(--u) * 0.1) 0 rgba(11, 6, 32, 0.9), 0 0 calc(var(--u) * 0.3) rgba(11, 6, 32, 0.95);
+}
+
+.spop__pts:empty { display: none; }
+
+.spop[data-rating="perfect"] .spop__word { color: #fff6d8; }
+.spop[data-rating="good"] .spop__word { font-size: calc(var(--u) * 1.3); }
+
+/* BAD: smaller, flat coral, no glow */
+.spop[data-rating="bad"] .spop__word {
+  font-size: calc(var(--u) * 1.05);
+  letter-spacing: 0.04em;
+  color: #e9828f;
+  text-shadow: 0 calc(var(--u) * 0.1) 0 rgba(11, 6, 32, 0.9);
+}
+
+.spop[data-rating="bad"] .spop__pts {
+  font-size: calc(var(--u) * 0.74);
+  color: rgba(246, 241, 255, 0.72);
+}
+
+/* MISS: the smallest and dullest thing on screen */
+.spop[data-rating="miss"] .spop__word {
+  font-size: calc(var(--u) * 0.86);
+  letter-spacing: 0.08em;
+  color: #9a90c4;
+  -webkit-text-stroke-width: calc(var(--u) * 0.07);
+  text-shadow: none;
+}
+
+/* gold shards: their own colour and a star before the points */
+.spop.is-gold { --rc: #ffc24a; }
+
+.spop.is-gold .spop__word {
+  color: #fff3c4;
+  -webkit-text-stroke-color: rgba(60, 26, 0, 0.92);
+  text-shadow:
+    0 0 calc(var(--u) * 1) #ffc24a,
+    0 0 calc(var(--u) * 0.4) #ffb020,
+    0 calc(var(--u) * 0.12) 0 rgba(60, 26, 0, 0.92);
+}
+
+.spop.is-gold .spop__pts { color: var(--gold-hot); }
+
+.spop.is-gold .spop__pts::before {
+  content: "";
+  display: inline-block;
+  width: 0.86em;
+  height: 0.86em;
+  margin-right: 0.3em;
+  vertical-align: -0.06em;
+  background: var(--gold);
+  clip-path: polygon(50% 0%, 61% 39%, 100% 50%, 61% 61%, 50% 100%, 39% 61%, 0% 50%, 39% 39%);
+}
+
+/* PERFECT and gold: a thin ring snaps outward from the cut itself */
+.spop__ring {
+  position: absolute;
+  left: calc(var(--u) * -1.7);
+  top: calc(var(--u) * -1.7);
+  width: calc(var(--u) * 3.4);
+  height: calc(var(--u) * 3.4);
+  border-radius: 50%;
+  border: calc(var(--u) * 0.18) solid var(--rc);
+  opacity: 0;
+  will-change: transform, opacity;
+}
+
+/* how-to line: bottom centre, up for the first seconds of a run (js/hud.js plays it) */
+.shint {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--u) * 2.6);
+  display: none;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.sf[data-mode="slash"] .shint { display: flex; }
+
+.shint__plate {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--u) * 0.8);
+  padding: calc(var(--u) * 0.75) calc(var(--u) * 1.8) calc(var(--u) * 0.75) calc(var(--u) * 1.3);
+  border-radius: calc(var(--u) * 0.4) calc(var(--u) * 1.6) calc(var(--u) * 0.4) calc(var(--u) * 0.4);
+  background: rgba(11, 6, 32, 0.8);
+  box-shadow: inset 0 0 0 1px rgba(190, 176, 255, 0.4), inset calc(var(--u) * 0.24) 0 0 var(--gold);
+  color: #ffffff;
+  font-size: calc(var(--u) * 1.3);
+  font-weight: 900;
+  line-height: 1.1;
+  white-space: nowrap;
+  opacity: 0;
+  will-change: transform, opacity;
+}
+
+.shint__plate svg {
+  flex: 0 0 auto;
+  width: calc(var(--u) * 1.4);
+  height: calc(var(--u) * 1.4);
+  color: var(--gold);
+}
+
+/* ---- STAR SLASH results: the solo layout, with the rank letter as the hero beside the stars ---- */
+
+.rank {
+  --kc: var(--gold-hot);
+  --kg: rgba(255, 194, 74, 0.7);
+  position: relative;
+  flex: 0 0 auto;
+  display: none;
+  width: calc(var(--u) * 8.6);
+  height: calc(var(--u) * 9);
+  filter: drop-shadow(0 0 calc(var(--u) * 1.3) var(--kg));
+}
+
+.sf[data-mode="slash"] .rank { display: block; }
+
+.rank[data-rank="A"] { --kc: var(--teal); --kg: rgba(25, 227, 210, 0.5); }
+.rank[data-rank="B"] { --kc: var(--violet-soft); --kg: rgba(169, 139, 255, 0.5); }
+.rank[data-rank="C"] { --kc: #d5d8ff; --kg: rgba(213, 216, 255, 0.26); }
+.rank[data-rank="D"] { --kc: #c58b96; --kg: rgba(197, 139, 150, 0.16); }
+
+/* a star shard: a rim in the rank colour around a dark faceted face */
+.rank__gem {
+  position: absolute;
+  inset: 0;
+  background: var(--kc);
+  clip-path: polygon(50% 0%, 97% 27%, 79% 100%, 21% 100%, 3% 27%);
+}
+
+.rank__gem::before {
+  content: "";
+  position: absolute;
+  inset: calc(var(--u) * 0.22);
+  background:
+    linear-gradient(118deg, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0) 36%),
+    linear-gradient(205deg, rgba(106, 61, 240, 0.6) 0%, rgba(21, 12, 58, 0) 58%),
+    linear-gradient(180deg, #2a1970 0%, #150c3a 55%, #0b0620 100%);
+  clip-path: inherit;
+}
+
+/* its cut line */
+.rank__cut {
+  position: absolute;
+  left: -6%;
+  right: -6%;
+  top: 50%;
+  height: calc(var(--u) * 0.16);
+  margin-top: calc(var(--u) * -0.08);
+  border-radius: calc(var(--u) * 0.1);
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, var(--kc) 22%, #ffffff 50%, var(--kc) 78%, rgba(255, 255, 255, 0) 100%);
+  transform: rotate(-30deg);
+}
+
+.rank__letter {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-bottom: calc(var(--u) * 0.5);
+  font: 900 calc(var(--u) * 5.2) / 1 var(--font-display);
+  color: var(--kc);
+  -webkit-text-stroke: calc(var(--u) * 0.18) rgba(11, 6, 32, 0.92);
+  paint-order: stroke fill;
+  text-shadow: 0 calc(var(--u) * 0.24) 0 rgba(11, 6, 32, 0.9);
+  transform: skewX(-8deg);
+}
+
+.rank[data-rank="S"] .rank__letter { color: #fff6d8; }
+
+.rank__label {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--u) * 0.85);
+  padding-left: 0.34em;
+  text-align: center;
+  font: 600 calc(var(--u) * 0.54) / 1 var(--font-display);
+  letter-spacing: 0.34em;
+  color: var(--kc);
+  opacity: 0.85;
+}
+
+/* the stars step back a little so the rank leads */
+.sf[data-mode="slash"] .hero .stars {
+  gap: calc(var(--u) * 0.8);
+  height: calc(var(--u) * 6.2);
+  margin-top: 0;
+}
+
+.sf[data-mode="slash"] .hero .star {
+  width: calc(var(--u) * 4.6);
+  height: calc(var(--u) * 4.6);
+}
+
+/* MISS is the dull row here; BAD carries the coral */
+.sf .breakdown--slash [data-rating="miss"] { --rc: #9388c0; }
+
 /* ------------------------------------------------------------------ accessibility */
 
 @media (prefers-reduced-motion: reduce) {
@@ -2886,6 +3672,8 @@ body {
 
   .sf[data-screen] .title__col > *,
   .sf[data-screen] .howto > li,
+  .sf[data-screen] .screen--title.is-picked .title__col > *,
+  .sf[data-screen] .screen--title.is-picked .howto > li,
   .sf[data-screen] .cam__frame,
   .sf[data-screen] .cam__side > *,
   .sf[data-screen] .pause > *,
@@ -2893,4 +3681,6 @@ body {
     animation-duration: 1ms;
     animation-delay: 0s;
   }
+
+  .modeswitch__thumb { transition: none; }
 }

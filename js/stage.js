@@ -41,7 +41,7 @@ const TUNING = {
   discPower: 2.4, // extra gain on the disc itself, so it stays hot while the haze stays low
   floorReflectivity: 0.6, // mirror strength of the stage disc
   beamPower: 0.2, // volumetric beam brightness
-  wavePower: 0.55, // rating shockwave brightness (thin rings on a billboard behind everybody)
+  wavePower: 0.3, // rating shockwave brightness (thin rings on a billboard behind everybody)
   resultsShift: 0.22, // results: the view is shifted so NOVA stands in the left third (fraction of width)
   menuShift: -0.19, // title: NOVA stands in the right third, clear of the logo and buttons
   cameraFov: 30, // vertical fov, all modes
@@ -56,13 +56,15 @@ const TUNING = {
   // behind NOVA or at an avatar's spot, so none of it can veil the coach.
   fxPower: 0.8, // master brightness of rings, pads, columns and flashes
   fxSparks: 0.65, // particle-count multiplier for fountains and bursts
-  columnPower: 0.6, // light column at the scoring avatar's spot
+  columnPower: 0.4, // light column at the scoring avatar's spot
   padPower: 1.0, // the avatars' floor pads
-  edgeGlow: 0.6, // frame-edge colour hit on the scoring player's side (final pass)
+  edgeGlow: 0.3, // frame-edge colour hit on the scoring player's side (final pass)
   sideBeams: 1.5, // how hard the overhead beams on the scoring side slam onto that spot
   pylonJump: 1.7, // metres the flank pylons jump at full strength
   punch: 0.3, // metres of camera punch-in at full strength (gold; PERFECT is 0.55 of it); capped at 0.3
   missDip: 0.3, // desaturation of the missing player's side on MISS (a hint, not a blackout)
+  backFlash: 0, // how much the sky, the aurora ribbons and the back fan beams light up on PERFECT / gold / combo.
+  // 0 = not at all: lit together they were a white wall of light behind the coach
 };
 
 // ---------------------------------------------------------------------------------------
@@ -492,6 +494,7 @@ uniform float uEnergy;
 uniform float uStageR;
 uniform float uReflStrength;
 uniform float uFlash;
+uniform float uSlash;               // 0 = dance stage, 1 = STAR SLASH (LED grid and rim quiet, no dancer shadow)
 uniform vec3 uFlashCol;
 uniform vec3 uColA;
 uniform vec3 uColB;
@@ -562,6 +565,7 @@ void main() {
   em += mix(uColC, vec3(1.0), 0.25) * edgeBand * (1.2 + 1.6 * uKick);
   em += uFlashCol * (edgeBand * uFlash * 3.0);
   em += uColC * exp(-max(r - uStageR, 0.0) * 1.6) * (1.0 - stageMask) * (0.18 + 0.25 * uKick);
+  em *= 1.0 - 0.8 * uSlash;
 
   // --- player pads: where each avatar stands, in that player's colour ---
   for (int i = 0; i < 2; i++) {
@@ -602,7 +606,7 @@ void main() {
 
   // soft contact shadow under the dancer
   vec2 cs = wp.xz * vec2(1.0, 1.35);
-  float contact = 1.0 - 0.62 * exp(-dot(cs, cs) / 0.26);
+  float contact = 1.0 - 0.62 * (1.0 - uSlash) * exp(-dot(cs, cs) / 0.26);
   col *= contact;
 
   gl_FragColor = vec4(col, 1.0);
@@ -720,7 +724,9 @@ varying vec3 vP;
 ${GLSL_NOISE}
 void main() {
   float u = vP.x;
-  float v = vP.y;
+  // clamped: on a multisampled target the varying is extrapolated past the strip's edge where it
+  // is seen edge-on, (1 - v*v)^2 then explodes and bloom turns that pixel into a white slab
+  float v = clamp(vP.y, -1.0, 1.0);
   float idx = vP.z;
   float across = 1.0 - v * v;
   across *= across;
@@ -1291,7 +1297,8 @@ function launchSpeed(height) {
  *   { renderer, scene, camera,
  *     add(object3d),                        // dancer / avatar groups
  *     update(time, dt, { beat, levels, energy, section }), render(), resize(w, h),
- *     setMode('menu' | 'play' | 'results'),
+ *     setMode('menu' | 'play' | 'results' | 'slash'),
+ *     setSlashCamera(pos, target, fov),     // the 'slash' shot (driven by js/slash/view.js)
  *     setPlayers(n),                        // 0 | 1 | 2 avatars share the stage: re-frames the play shot
  *     getPlayerSpots(n?),                   // -> [{ x, z, scale, player }] where the avatar groups go
  *     pulse(kind, { player, combo }?),      // 'ok' | 'good' | 'super' | 'perfect' | 'gold' | 'miss' | 'combo'
@@ -1342,6 +1349,13 @@ export function createStage(canvas) {
   let playerCount = 0;
   let viewShift = TUNING.menuShift;
   let viewShifted = false;
+  // STAR SLASH mode ('slash'): the slash view owns the shot and hands it over through
+  // setSlashCamera(); slashAmt eases 0 -> 1 with the mode and is exactly 0 in every other mode.
+  const slashPos = new THREE.Vector3(0, 1.84, 3.3);
+  const slashTgt = new THREE.Vector3(0, 1.14, 0);
+  let slashFov = 46;
+  let slashAmt = 0;
+  let slashLens = false; // the camera currently carries a fov other than tuning.cameraFov
 
   const look = makeLook(HEX.violet, HEX.teal, HEX.amber, 1, 1, 0.4, 0.45, 0, 0.8, 0.55);
   let energySm = 0.3;
@@ -1544,6 +1558,7 @@ export function createStage(canvas) {
       uStageR: { value: STAGE_RADIUS },
       uReflStrength: { value: tuning.floorReflectivity },
       uFlash: { value: 0 },
+      uSlash: { value: 0 },
       uFlashCol: { value: new THREE.Color(HEX.white) },
       uColA: { value: new THREE.Color(HEX.violet) },
       uColB: { value: new THREE.Color(HEX.teal) },
@@ -2198,6 +2213,12 @@ export function createStage(canvas) {
     playDist = playerCount > 0 ? computePlayDistance(camera.aspect, playerCount, frame) : soloDist;
   }
 
+  /** Vertical fov of the lens right now: tuning.cameraFov, eased toward the slash view's fov in slash mode. */
+  function lensFov() {
+    if (!(slashAmt > 0)) return tuning.cameraFov;
+    return lerp(tuning.cameraFov, slashFov, slashAmt * slashAmt * (3 - 2 * slashAmt));
+  }
+
   // ---------- resize ----------
   function resize(w, h) {
     let width = finite(w, 0);
@@ -2237,7 +2258,7 @@ export function createStage(canvas) {
     const texel = floorMat.uniforms.uReflTexel;
     if (texel) texel.value.set(1 / rw, 1 / rh);
 
-    camera.fov = tuning.cameraFov;
+    camera.fov = lensFov();
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
     refitCamera();
@@ -2256,15 +2277,29 @@ export function createStage(canvas) {
 
   // ---------- mode ----------
   function setMode(next) {
-    const m = next === 'play' || next === 'results' || next === 'menu' ? next : 'menu';
+    const m = next === 'play' || next === 'results' || next === 'menu' || next === 'slash' ? next : 'menu';
     if (m === mode) return;
     mode = m;
     modeBlend = 0;
+    // STAR SLASH: the lane runs through the dancers' spots, so NOVA and the avatars step out
+    actors.visible = true; // NOVA stands on the runway in STAR SLASH too (the avatars hide themselves)
     if (m === 'results') {
       emitRing(0, 0, 0.7, STAGE_RADIUS * 1.1, COL.amber, 1.4, 1.0, 1.1, 0);
       emitBurst(120, COL.amber, COL.white, 3.4, 1.8, 0.07, 1.4);
       starFlare = Math.max(starFlare, 0.35);
     }
+  }
+
+  /**
+   * The shot of the 'slash' mode: a fixed first-person camera at `pos` looking at `target`
+   * (stage space, metres) through a `fov`-degree (vertical) lens. js/slash/view.js calls this
+   * every frame while it is active (it fits the pose to the aspect ratio); the stage eases
+   * into the pose from wherever the camera was and holds it. No effect on the other modes.
+   */
+  function setSlashCamera(pos, target, fov) {
+    if (pos) slashPos.set(finite(pos.x, slashPos.x), finite(pos.y, slashPos.y), finite(pos.z, slashPos.z));
+    if (target) slashTgt.set(finite(target.x, slashTgt.x), finite(target.y, slashTgt.y), finite(target.z, slashTgt.z));
+    slashFov = clamp(finite(fov, slashFov), 15, 80);
   }
 
   // ---------- players ----------
@@ -2313,19 +2348,21 @@ export function createStage(canvas) {
    * on the back wall behind NOVA. Two players landing the same beat share one answer.
    */
   function fireStage(level, color, sparkle) {
-    lightFlash = Math.max(lightFlash, 0.8 * level);
+    const back = tuning.backFlash;
+    lightFlash = Math.max(lightFlash, 0.4 * level);
     flashCol.copy(color);
-    fanFlash = Math.max(fanFlash, level);
-    ribbonFlash = Math.max(ribbonFlash, 0.9 * level);
-    skyFlash = Math.max(skyFlash, 0.6 * level);
+    fanFlash = Math.max(fanFlash, level * back);
+    ribbonFlash = Math.max(ribbonFlash, 0.9 * level * back);
+    skyFlash = Math.max(skyFlash, 0.6 * level * back);
     if (clock - wideAt < 0.09 && level <= wideLevel) return;
     wideAt = clock;
     wideLevel = level;
     emitRing(0, 0, 0.7, STAGE_RADIUS * (0.75 + 0.4 * level), color, 1.1 * level, 1.3 * level, 0.95, 0.03);
-    emitWave(0, 1.15, 0, 0.5, 2.6 + 2.2 * level, color, 1.6 * level, 1.0, 0.75 + 0.2 * level, 0);
+    // the ring of light on the back wall behind NOVA only with backFlash (it reads as a white glow)
+    if (back > 0) emitWave(0, 1.15, 0, 0.5, 2.6 + 2.2 * level, color, 1.6 * level * back, 1.0, 0.75 + 0.2 * level, 0);
     if (sparkle) {
-      emitRing(0, 0, 0.7, STAGE_RADIUS * 0.85, COL.white, 0.8 * level, 0.5, 0.8, 0.14);
-      emitWave(0, 1.15, 0, 0.4, 3.2, COL.white, 0.9 * level, 0.7, 0.7, 0.11);
+      emitRing(0, 0, 0.7, STAGE_RADIUS * 0.85, COL.white, 0.5 * level, 0.5, 0.8, 0.14);
+      if (back > 0) emitWave(0, 1.15, 0, 0.4, 3.2, COL.white, 0.9 * level * back, 0.7, 0.7, 0.11);
       emitBurst(Math.round(90 * level * tuning.fxSparks), color, COL.white, 4.6, 1.6, 0.065, 1.3);
       emitRain(Math.round(70 * level * tuning.fxSparks), color, COL.white);
     } else {
@@ -2458,14 +2495,16 @@ export function createStage(canvas) {
     pylonWaveAt = clock;
     pylonWaveGain = level;
     // rig, ribbons and sky; ring of light behind NOVA; glitter
-    lightFlash = Math.max(lightFlash, 0.55 * level);
+    lightFlash = Math.max(lightFlash, 0.3 * level);
     flashCol.copy(gold);
-    fanFlash = Math.max(fanFlash, 1);
-    ribbonFlash = Math.max(ribbonFlash, 1);
-    skyFlash = Math.max(skyFlash, 0.5);
+    fanFlash = Math.max(fanFlash, tuning.backFlash);
+    ribbonFlash = Math.max(ribbonFlash, tuning.backFlash);
+    skyFlash = Math.max(skyFlash, 0.5 * tuning.backFlash);
     if (!shared) {
-      emitWave(0, 1.15, 0, 0.5, 4.2 * level, gold, 1.5, 1.0, 0.85, 0);
-      emitWave(0, 1.15, 0, 0.4, 2.8 * level, COL.white, 0.9, 0.7, 0.7, 0.1);
+      if (tuning.backFlash > 0) {
+        emitWave(0, 1.15, 0, 0.5, 4.2 * level, gold, 1.5 * tuning.backFlash, 1.0, 0.85, 0);
+        emitWave(0, 1.15, 0, 0.4, 2.8 * level, COL.white, 0.9 * tuning.backFlash, 0.7, 0.7, 0.1);
+      }
       emitRain(Math.round(50 * level * tuning.fxSparks), gold, COL.white);
     }
     weighSides(player, false);
@@ -2486,6 +2525,7 @@ export function createStage(canvas) {
    * height, column height and how much of the stage joins in (see LADDER).
    */
   function pulse(kind, opts) {
+    if (mode === 'slash') return; // the slash view draws its own cut effects on the lane
     const raw = opts && typeof opts === 'object' ? opts.player : undefined;
     const player = raw === 0 || raw === 1 ? raw : -1;
     if (kind === 'miss') fireMiss(player);
@@ -2508,7 +2548,25 @@ export function createStage(canvas) {
 
     const st = state || EMPTY_STATE;
     const levels = st.levels || ZERO_LEVELS;
-    const playing = mode === 'play';
+    const slash = mode === 'slash';
+    const playing = mode === 'play' || slash; // both follow the song: real beat, section looks, energy
+
+    // STAR SLASH: the dance rig fades out and is then not drawn at all: the star, the nebula
+    // and the lane are the only light sources of that mode. slashAmt is exactly 0 in every other
+    // mode (once the way out has finished), so each `1 - k * slashAmt` factor below is exactly 1
+    // there and every rig object is visible, as before.
+    if (slash || slashAmt > 0) {
+      slashAmt += ((slash ? 1 : 0) - slashAmt) * damp(3.2, delta);
+      if (slash && slashAmt > 0.999) slashAmt = 1;
+      if (!slash && slashAmt < 0.001) slashAmt = 0;
+      const rig = slashAmt < 1;
+      beams.visible = rig;
+      lamps.visible = slashAmt < 0.5; // their sprites keep a base glow, so they leave mid-fade
+      pylons.visible = slashAmt < 0.8; // before they are flat tiles on the floor
+      embers.visible = rig;
+      ribbons.visible = !slash; // at once: seen from the lane the aurora bands cross the lens
+    }
+    const beamCalm = 1 - slashAmt;
 
     // --- beat ---
     const bps = SONG.bpm / 60;
@@ -2570,7 +2628,7 @@ export function createStage(canvas) {
       beamAmt[s] *= Math.exp(-delta * 4.2);
       pylonAmt[s] *= Math.exp(-delta * 4.6);
       padAmt[s] *= Math.exp(-delta * 3.6);
-      const padTarget = playing && s < playerCount ? 1 : 0;
+      const padTarget = playing && !slash && s < playerCount ? 1 : 0;
       padOn[s] += (padTarget - padOn[s]) * damp(4, delta);
     }
     lightFlash *= Math.exp(-delta * 5.0);
@@ -2609,6 +2667,7 @@ export function createStage(canvas) {
     setU(fu, 'uBeatIndex', ((beatFloor % 64) + 64) % 64);
     setU(fu, 'uEnergy', energy);
     setU(fu, 'uFlash', lightFlash * fxPower);
+    setU(fu, 'uSlash', slashAmt);
     setU(fu, 'uFlashCol', flashCol);
     setU(fu, 'uReflStrength', tuning.floorReflectivity);
     setU(fu, 'uColA', look.a);
@@ -2670,7 +2729,7 @@ export function createStage(canvas) {
         inten += slam * tuning.sideBeams * fxPower;
         radius = lerp(radius, 0.62, w);
       }
-      inten *= 1 - 0.25 * missAmt[side];
+      inten *= (1 - 0.25 * missAmt[side]) * beamCalm;
       setBeam(i, tx, 0.0, tz, radius, col, inten);
     }
     const fanOpen = Math.min(1, 0.25 + 0.75 * (0.75 * energy + 0.25 * kick) + fanFlash * 0.5);
@@ -2686,7 +2745,7 @@ export function createStage(canvas) {
       const col = _c2.copy(i % 2 ? look.c : look.b).lerp(flashCol, fanTint);
       const chase = lerp(1, i === fanChase || i === BEAM_FAN - 1 - fanChase ? 1.3 : 0.4, look.strobe);
       // stage-wide answer (PERFECT / gold / combo): the whole fan at the back rim fires at once
-      const inten = (beamBase * 0.62 * (0.75 + 0.25 * kick) * chase + lightFlash * 0.25 + fanFlash * 0.9 * fxPower) * (1 - 0.2 * missMax);
+      const inten = (beamBase * 0.62 * (0.75 + 0.25 * kick) * chase + lightFlash * 0.25 + fanFlash * 0.9 * fxPower) * (1 - 0.2 * missMax) * beamCalm;
       setBeam(bi, lampPos[k] + _v2.x * len, lampPos[k + 1] + _v2.y * len, lampPos[k + 2] + _v2.z * len, 1.5, col, inten);
     }
     beams.instanceMatrix.needsUpdate = true;
@@ -2716,7 +2775,7 @@ export function createStage(canvas) {
         jump += Math.exp(-x * x * 22) * pylonWaveGain * (1 - waveAge / 0.9);
       }
       targetH += jump * tuning.pylonJump * fxPower;
-      targetH *= 1 - 0.35 * missAmt[side];
+      targetH *= (1 - 0.35 * missAmt[side]) * (1 - slashAmt);
       const h0 = pylonH[i];
       const hNew = h0 + (targetH - h0) * damp(targetH > h0 ? 22 : 6, delta);
       pylonH[i] = hNew;
@@ -2729,7 +2788,7 @@ export function createStage(canvas) {
     pylons.instanceMatrix.needsUpdate = true;
     setU(pylonMat.uniforms, 'uColA', look.a);
     setU(pylonMat.uniforms, 'uColB', look.b);
-    setU(pylonMat.uniforms, 'uPower', (0.55 + 0.75 * energy + 0.2 * kick + lightFlash * 0.6) * (1 - 0.2 * missMax));
+    setU(pylonMat.uniforms, 'uPower', (0.55 + 0.75 * energy + 0.2 * kick + lightFlash * 0.6) * (1 - 0.2 * missMax) * (1 - slashAmt));
     const waveGlow = waveOn ? pylonWaveGain * (1 - waveAge / 0.9) : 0;
     _h4.set(sideCol[0].r, sideCol[0].g, sideCol[0].b, Math.min(1.6, pylonAmt[0] + waveGlow) * fxPower);
     setU(pylonMat.uniforms, 'uHitL', _h4);
@@ -2788,12 +2847,12 @@ export function createStage(canvas) {
 
     // --- particles ---
     setU(dustMat.uniforms, 'uTime', clock);
-    setU(dustMat.uniforms, 'uPower', 0.55 + 0.35 * highSm + 0.25 * energy);
+    setU(dustMat.uniforms, 'uPower', (0.55 + 0.35 * highSm + 0.25 * energy) * (1 - 0.6 * slashAmt)); // the lane camera sits inside the dust: no bokeh blobs
     setU(dustMat.uniforms, 'uColA', look.a);
     setU(dustMat.uniforms, 'uColB', look.b);
     setU(emberMat.uniforms, 'uTime', clock);
     setU(emberMat.uniforms, 'uAmount', clamp01(look.embers * (0.45 + 0.55 * energy) + rise * 0.3));
-    setU(emberMat.uniforms, 'uPower', 0.85 + 0.2 * kick);
+    setU(emberMat.uniforms, 'uPower', (0.85 + 0.2 * kick) * (1 - slashAmt));
     _c1.copy(COL.amber).lerp(look.c, 0.35);
     _c2.copy(COL.coral).lerp(look.a, 0.35);
     setU(emberMat.uniforms, 'uColA', _c1);
@@ -2826,6 +2885,11 @@ export function createStage(canvas) {
       const roll = Math.sin(beat * (Math.PI / 8) + 1.0) * 0.006 + Math.sin(clock * 37) * punchSm * 0.004;
       camera.up.set(Math.sin(roll), Math.cos(roll), 0);
       follow = 9;
+    } else if (slash) {
+      // first-person lane shot, owned by the slash view (setSlashCamera): steady, level, no punch
+      desPos.copy(slashPos);
+      desTgt.copy(slashTgt);
+      follow = 9;
     } else if (mode === 'results') {
       // hero shot: closer, low, NOVA in the left third (the score panel sits on the right)
       const ang = Math.sin(clock * 0.2) * 0.26 - 0.1;
@@ -2852,7 +2916,21 @@ export function createStage(canvas) {
       camPos.lerp(desPos, kCam);
       camTgt.lerp(desTgt, kCam);
     }
-    viewShift += (shiftTarget - viewShift) * damp(mode === 'play' ? 6 : 2.2, delta);
+    viewShift += (shiftTarget - viewShift) * damp(mode === 'play' || slash ? 6 : 2.2, delta);
+    if (slashAmt > 0 || slashLens) {
+      // the slash lens eases in and out with the mode; sprites keep their world size through it
+      const fovNow = lensFov();
+      if (fovNow !== camera.fov) {
+        camera.fov = fovNow;
+        camera.updateProjectionMatrix();
+        const pointScale = Math.max(1, Math.round(viewH * pixelRatio)) / (2 * Math.tan(THREE.MathUtils.degToRad(fovNow) * 0.5));
+        setU(dustMat.uniforms, 'uScale', pointScale);
+        setU(emberMat.uniforms, 'uScale', pointScale);
+        setU(burstMat.uniforms, 'uScale', pointScale);
+        setU(lampMat.uniforms, 'uScale', pointScale);
+      }
+      slashLens = slashAmt > 0;
+    }
     if (Math.abs(viewShift) > 5e-4) {
       camera.setViewOffset(viewW, viewH, Math.round(viewShift * viewW), 0, viewW, viewH);
       viewShifted = true;
@@ -2979,6 +3057,7 @@ export function createStage(canvas) {
     resize,
     pulse,
     setMode,
+    setSlashCamera,
     setPlayers,
     getPlayerSpots: (n) => getPlayerSpots(n === undefined ? playerCount : n),
     // extras (not required by the contract)
