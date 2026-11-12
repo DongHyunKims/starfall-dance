@@ -114,6 +114,21 @@ export const TRACKER_DEFAULTS = Object.freeze({
   offFrameFade: 0.25,
   // Consecutive detector failures before the GPU delegate is swapped for CPU.
   maxErrors: 3,
+  // A GPU detector that runs without an error and never finds anybody: on some phones that is
+  // what a GPU delegate that does not work looks like (the camera picture is fine, nobody is
+  // ever recognised). So a GPU detector that has seen nobody for silentGpuMs of camera frames
+  // hands over to the CPU detector, which then waits for somebody to turn up.
+  //   - It finds somebody at once (within silentInstantMs of its first frame): they were there
+  //     all along and the GPU detector missed them. The CPU detector stays.
+  //   - It finds somebody later: they have only just walked in, which says nothing about the
+  //     GPU detector. That one is put back and has silentCheckMs to see them too; if it does it
+  //     stays (it is the faster one), if not the CPU detector comes back for good.
+  // Once per camera session; a detector that has seen somebody is never doubted again.
+  silentGpuMs: 4000,
+  silentInstantMs: 1200,
+  silentCheckMs: 2500,
+  silentMinFrames: 24,
+  silentCheckFrames: 10,
   // Camera request.
   width: 640,
   height: 480,
@@ -761,6 +776,15 @@ export function createPoseTracker(videoEl, options = {}) {
   let stream = null;
   let cameraPromise = null;
 
+  // the silent-detector watch (see silentGpuMs): 0 the GPU detector is being watched, 1 the CPU
+  // detector is waiting for somebody, 3 the GPU detector is being checked again, 2 settled
+  const silence = { phase: 0, since: NaN, frames: 0, gpuBroken: false };
+  const resetSilence = () => {
+    silence.phase = silence.gpuBroken ? 2 : 0;
+    silence.since = NaN;
+    silence.frames = 0;
+  };
+
   let lastVideoTime = -1;
   let lastTs = 0;           // last timestamp handed to MediaPipe (must strictly increase)
   let lastFrameMs = NaN;    // nowMs of the previous frame in which somebody was detected (fps)
@@ -1079,6 +1103,7 @@ export function createPoseTracker(videoEl, options = {}) {
       }
       lastVideoTime = -1;
       resetTracking();
+      resetSilence(); // a new camera session: the detector is watched again
     })().finally(() => { cameraPromise = null; });
     return cameraPromise;
   }
@@ -1106,6 +1131,42 @@ export function createPoseTracker(videoEl, options = {}) {
     if (rebuilding || delegate !== 'GPU' || !vision || !fileset) return;
     console.warn('[pose-tracker] repeated detector errors on GPU, rebuilding on CPU.');
     rebuild('CPU', false);
+  }
+
+  /**
+   * Called for every camera frame the detector looked at, with the number of people it found.
+   * Catches the GPU detector that works on paper and sees nobody (silentGpuMs above).
+   */
+  function watchSilence(found, now) {
+    const w = silence;
+    if (w.phase === 2) return;
+    if (!(w.since === w.since)) { w.since = now; w.frames = 0; } // this detector's first frame
+    w.frames++;
+    const waited = now - w.since;
+    if (w.phase === 0) {
+      if (found > 0 || delegate !== 'GPU') { w.phase = 2; return; } // it sees people (or there is nothing else to try)
+      if (w.frames < cfg.silentMinFrames || waited < cfg.silentGpuMs) return;
+      console.warn('[pose-tracker] the GPU detector has not found anybody: trying the CPU detector.');
+      w.phase = 1; w.since = NaN;
+      rebuild('CPU', false);
+    } else if (w.phase === 1) {
+      if (found === 0) return; // nobody yet: it waits
+      if (waited <= cfg.silentInstantMs) {
+        console.warn('[pose-tracker] the CPU detector found the player the GPU detector missed: staying on CPU.');
+        w.phase = 2; w.gpuBroken = true;
+        return;
+      }
+      // somebody has just walked in: the GPU detector gets a second look at them
+      w.phase = 3; w.since = NaN;
+      rebuild('GPU', false);
+    } else {
+      if (found > 0) { w.phase = 2; return; } // the GPU detector is fine
+      if (delegate !== 'GPU') { w.phase = 2; return; } // it could not be built again: the CPU one is running
+      if (w.frames < cfg.silentCheckFrames || waited < cfg.silentCheckMs) return;
+      console.warn('[pose-tracker] the GPU detector does not see the player: staying on CPU.');
+      w.phase = 2; w.gpuBroken = true;
+      rebuild('CPU', false);
+    }
   }
 
   // One person's raw landmarks -> the slot's filters -> the slot's result (in place).
@@ -1241,6 +1302,7 @@ export function createPoseTracker(videoEl, options = {}) {
         if (Number.isFinite(dt) && dt > 0) fps += ((1 / dt) - fps) * 0.1;
         lastFrameMs = now;
       }
+      watchSilence(n, now);
 
       const dets = detViews[n];
       assignSlots(slotState, dets, maxPlayers, now, slotState, cfg);

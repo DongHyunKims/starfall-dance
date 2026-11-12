@@ -68,7 +68,54 @@ const CHIP_TEXT = [
 ];
 const WAITING_TEXT = ['P2 준비 완료! P1을 기다리고 있어요', 'P1 준비 완료! P2를 기다리고 있어요'];
 
+/**
+ * What this page is running on. It decides the wording of the camera help (a phone has no
+ * address-bar camera icon and no lid), whether the page sits inside another app's web view
+ * (KakaoTalk, Instagram …: those often cannot open the camera at all), and whether the
+ * keyboard mode gets touch pads.
+ */
+export function sniffDevice(nav) {
+  const n = nav || (typeof navigator !== 'undefined' ? navigator : {});
+  const ua = String(n.userAgent || '');
+  const ios = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && n.maxTouchPoints > 1);
+  const android = /Android/.test(ua);
+  let inApp = '';
+  if (/KAKAOTALK/i.test(ua)) inApp = '카카오톡';
+  else if (/NAVER\(inapp/i.test(ua)) inApp = '네이버 앱';
+  else if (/Instagram/i.test(ua)) inApp = '인스타그램';
+  else if (/FBAN|FBAV|FB_IAB/i.test(ua)) inApp = '페이스북';
+  else if (/\bLine\//i.test(ua)) inApp = '라인';
+  else if (/DaumApps/i.test(ua)) inApp = '다음 앱';
+  else if (android && /; wv\)/.test(ua)) inApp = '이 앱';
+  else if (/iPhone|iPad|iPod/.test(ua) && !/Safari\//.test(ua)) inApp = '이 앱';
+  let coarse = false;
+  try {
+    coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+  } catch (e) {
+    coarse = false;
+  }
+  return { ios, android, mobile: ios || android, inApp, kakao: /KAKAOTALK/i.test(ua), touch: coarse };
+}
+
+// the same errors on a phone: where the permission lives there, and no talk of webcams and lids
+const CAMERA_ERRORS_MOBILE = {
+  denied: {
+    title: '카메라 권한이 필요해요',
+    ios: '주소창의 "ᴀA"(또는 ⋯) → 웹사이트 설정에서 카메라를 "허용"으로 바꾼 뒤 다시 시도해 주세요. 터치 플레이와 데모는 카메라 없이도 돼요.',
+    android: '주소창의 자물쇠(또는 ⓘ) → 권한에서 카메라를 허용한 뒤 다시 시도해 주세요. 터치 플레이와 데모는 카메라 없이도 돼요.',
+  },
+  nodevice: {
+    title: '카메라를 열 수 없어요',
+    desc: '이 브라우저에서 카메라를 쓸 수 없어요. Safari나 Chrome에서 열어 보세요. 터치 플레이와 데모는 카메라 없이도 돼요.',
+  },
+};
+
 const CAMERA_ERRORS = {
+  // the page was opened inside another app (title and desc get the app's name)
+  inapp: {
+    title: ' 안에서는 카메라를 쓸 수 없어요',
+    desc: 'Safari나 Chrome에서 열면 카메라로 플레이할 수 있어요. 아래 버튼을 누르거나, 메뉴(⋯)의 "다른 브라우저로 열기"를 눌러 주세요. 터치 플레이와 데모는 여기서도 돼요.',
+  },
   denied: {
     title: '카메라 권한이 필요해요',
     desc: '주소창의 카메라 아이콘에서 권한을 허용한 뒤 다시 시도해 주세요. 카메라 없이 데모로도 즐길 수 있어요.',
@@ -126,7 +173,9 @@ const SLASH_TITLES = { S: '슈퍼노바!', A: '눈부신 궤적', B: '빛나는 
 const SLASH_HINT = '화살표 방향으로 손을 휘둘러 베세요';
 // the same line for a run on the keyboard (data-input="keys" on the root)
 const KEYS_HINT = '화살표와 같은 방향 키를 누르세요 · 청록은 W A S D · 금빛은 방향키';
-const HINT_SPANS = `<span class="in-cam">${SLASH_HINT}</span><span class="in-keys">${KEYS_HINT}</span>`;
+// … and on a touch screen (data-touch on the root): two pads under the thumbs
+const TOUCH_HINT = '화살표와 같은 방향을 누르세요 · 청록은 왼쪽 패드 · 금빛은 오른쪽 패드';
+const HINT_SPANS = `<span class="in-cam">${SLASH_HINT}</span><span class="in-keys"><span class="in-notouch">${KEYS_HINT}</span><span class="in-touch">${TOUCH_HINT}</span></span>`;
 
 const CAMERA_STATUS_SLASH = {
   requesting: '카메라를 준비하는 중…',
@@ -717,6 +766,8 @@ const CROWN_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17.5 
 // mode marks: a dancing figure, and a star shard cut in two along its line
 const DANCE_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12.6" cy="4.2" r="2.5"/><path fill="none" stroke="currentColor" stroke-width="2.7" stroke-linecap="round" stroke-linejoin="round" d="M12 9.2v5.6M12 10 6.6 6.2M12 10l5.6 2.8M12 14.8l-3.8 6.4M12 14.8l4.6 5.2"/></svg>';
 const SLASH_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11.6 1.4 18.3 6.8 5.5 14.7 3.6 7.9ZM19 8l1.4 1.1-3.5 13h-9l-1.7-6.2Z"/></svg>';
+const TOUCH_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 2.5a2 2 0 0 1 2 2V10l6.300 1.200a2.500 2.500 0 0 1 2 2.900l-.9 5a3 3 0 0 1-3 2.400H10.600a3 3 0 0 1-2.300-1.100L3.700 14.800a1.700 1.700 0 0 1 2.500-2.300L7 13.300V4.500a2 2 0 0 1 2-2Z"/></svg>';
+const PAD_ARROW = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.500 20.500 14h-5v6.500h-7V14h-5Z"/></svg>';
 const KEYS_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill-rule="evenodd" d="M3.5 5.5h17A2 2 0 0 1 22.500 7.5v9a2 2 0 0 1-2 2h-17a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2ZM5 8.500v2.200h2.200V8.500Zm3.900 0v2.200h2.200V8.500Zm3.900 0v2.200H15V8.500Zm3.900 0v2.200h2.200V8.500ZM5 13.300v2.200h2.200v-2.200Zm3.900 0v2.200H15v-2.200Zm7.800 0v2.200h2.200v-2.200Z"/></svg>';
 
 function btn(kind, act, inner, extra, attrs) {
@@ -930,7 +981,7 @@ function songsMarkup() {
 const SLASH_ACTIONS = (DEMO_ONLY
   ? btn('primary', 'startDemo', `${PLAY_SVG}<span>데모 보기</span><kbd>SPACE</kbd>`)
   : btn('primary', 'start', `${SLASH_SVG}<span>슬래시 시작</span><kbd>SPACE</kbd>`, '', 'data-players="1"')
-    + btn('ghost', 'startKeys', `${KEYS_SVG}<span>키보드로 플레이</span><kbd>K</kbd>`, 'btn--duo')
+    + btn('ghost', 'startKeys', `<span class="in-notouch">${KEYS_SVG}</span><span class="in-touch">${TOUCH_SVG}</span><span class="in-notouch">키보드로 플레이</span><span class="in-touch">터치로 플레이</span><kbd class="in-notouch">K</kbd>`, 'btn--duo')
     + btn('ghost', 'startDemo', `${PLAY_SVG}<span>데모 보기 <small>(카메라 없이)</small></span>`, 'btn--sm btn--quiet'));
 
 // rating-count rows of the STAR SLASH results ("s" keeps their data-refs apart from the dance rows)
@@ -979,7 +1030,7 @@ const TEMPLATE = `
     </div>
     <div class="title__actions pick-dance" style="--i:4">${TITLE_ACTIONS}</div>
     <div class="title__actions pick-slash" style="--i:4">${SLASH_ACTIONS}</div>
-    <p class="title__privacy" style="--i:5">${DEMO_ONLY ? '이 페이지는 데모 버전이에요. NOVA의 무대를 감상해 보세요. 버튼을 누르면 음악이 재생돼요.' : '<span class="pick-dance">혼자서도, 둘이서도! </span><span class="pick-slash">혼자 즐기는 모드예요. 카메라가 없으면 키보드로도 할 수 있어요. </span>카메라 영상은 이 기기 안에서만 처리되고, 저장되거나 전송되지 않아요.'}</p>
+    <p class="title__privacy" style="--i:5">${DEMO_ONLY ? '이 페이지는 데모 버전이에요. NOVA의 무대를 감상해 보세요. 버튼을 누르면 음악이 재생돼요.' : '<span class="pick-dance">혼자서도, 둘이서도! </span><span class="pick-slash">혼자 즐기는 모드예요. 카메라가 없으면 <span class="in-notouch">키보드로도</span><span class="in-touch">터치로도</span> 할 수 있어요. </span>카메라 영상은 이 기기 안에서만 처리되고, 저장되거나 전송되지 않아요.'}</p>
   </div>
   <ol class="howto pick-dance">
     <li style="--i:6"><canvas data-ref="how0"></canvas><div><em>01</em><strong>상반신이 보이게 1.5~3m</strong><span>머리부터 허리까지 보이면 OK · 전신도 좋아요</span></div></li>
@@ -1011,7 +1062,9 @@ const TEMPLATE = `
         <p data-ref="errDesc"></p>
         <div class="cam__erractions">
           ${btn('primary', 'startDemo', `${PLAY_SVG}<span>데모로 플레이</span>`, 'btn--sm')}
-          ${DEMO_ONLY ? '' : btn('ghost', 'startKeys', `${KEYS_SVG}<span>키보드로 플레이</span>`, 'btn--sm only-slash')}
+          ${DEMO_ONLY ? '' : btn('ghost', 'startKeys', `<span class="in-notouch">${KEYS_SVG}</span><span class="in-touch">${TOUCH_SVG}</span><span class="in-notouch">키보드로 플레이</span><span class="in-touch">터치로 플레이</span>`, 'btn--sm only-slash')}
+          ${btn('ghost', 'openExternal', '<span>브라우저로 열기</span>', 'btn--sm only-inapp')}
+          ${btn('ghost', 'copyLink', '<span data-ref="copyLabel">주소 복사</span>', 'btn--sm only-inapp')}
           ${btn('ghost', 'retryCamera', `${RETRY_SVG}<span>다시 시도</span>`, 'btn--sm')}
         </div>
       </div>
@@ -1030,13 +1083,14 @@ const TEMPLATE = `
       </div>
       <div class="pchips">${chipMarkup(0)}${chipMarkup(1)}</div>
       <ul class="cam__tips">
-        <li>${STAR_SVG}카메라에서 1.5~3m 떨어지기</li>
+        <li>${STAR_SVG}<span class="in-desktop">카메라에서 1.5~3m 떨어지기</span><span class="in-mobile">휴대폰을 가로로 세워 두고 1.5~3m 떨어지기</span></li>
         <li class="only-dance">${STAR_SVG}상반신이 화면에 보이면 준비 완료</li>
         <li class="only-1p only-dance">${STAR_SVG}전신이 보이면 더 좋아요 · 밝은 곳에서</li>
         <li class="only-2p only-dance">${STAR_SVG}P1은 왼쪽, P2는 오른쪽 · 팔 간격 넉넉히</li>
         <li class="only-slash">${STAR_SVG}팔을 뻗어도 두 손이 보이면 준비 완료</li>
         <li class="only-slash"><i class="handdot"></i>왼손은 청록 · <i class="handdot handdot--r"></i>오른손은 금빛으로 표시돼요</li>
       </ul>
+      <p class="cam__diag" data-ref="camDiag"></p>
       <div class="cam__actions">
         ${btn('ghost', 'skipCamera', '<span>바로 시작</span>', 'btn--sm cam__skip')}
         <button type="button" class="linkbtn" data-act="menu">메뉴로 돌아가기</button>
@@ -1067,6 +1121,7 @@ const TEMPLATE = `
       <span class="tile__tag"><b data-ref="tileTag">나</b><i class="tile__live">LIVE</i></span>
       <span class="tile__warn"><span class="only-dance">상반신이 보이게 서 주세요</span><span class="only-slash">화면 안으로 들어와 주세요</span></span>
       <span class="tile__off"><b>카메라 꺼짐</b><i>카메라를 켜면 여기에<br>내 모습이 나와요</i></span>
+      <span class="tile__touch" aria-hidden="true"><b>터치 패드</b><i>왼쪽은 청록 · 오른쪽은 금빛<br>화살표 방향을 누르세요</i></span>
       <span class="tile__keys" aria-hidden="true">
         <span class="keypad keypad--l"><kbd data-key="KeyW">W</kbd><kbd data-key="KeyA">A</kbd><kbd data-key="KeyS">S</kbd><kbd data-key="KeyD">D</kbd><em>왼손 · 청록</em></span>
         <span class="keypad keypad--r"><kbd data-key="ArrowUp">↑</kbd><kbd data-key="ArrowLeft">←</kbd><kbd data-key="ArrowDown">↓</kbd><kbd data-key="ArrowRight">→</kbd><em>오른손 · 금빛</em></span>
@@ -1151,6 +1206,25 @@ const TEMPLATE = `
     </div>
   </div>
 </section>
+
+<div class="pads" aria-hidden="true">
+  <div class="pad pad--l" data-pad="l">
+    <i class="pad__hit"></i>
+    <i class="pad__a pad__a--u">${PAD_ARROW}</i><i class="pad__a pad__a--r">${PAD_ARROW}</i><i class="pad__a pad__a--d">${PAD_ARROW}</i><i class="pad__a pad__a--l">${PAD_ARROW}</i>
+    <i class="pad__d pad__d--ur"></i><i class="pad__d pad__d--dr"></i><i class="pad__d pad__d--dl"></i><i class="pad__d pad__d--ul"></i>
+  </div>
+  <div class="pad pad--r" data-pad="r">
+    <i class="pad__hit"></i>
+    <i class="pad__a pad__a--u">${PAD_ARROW}</i><i class="pad__a pad__a--r">${PAD_ARROW}</i><i class="pad__a pad__a--d">${PAD_ARROW}</i><i class="pad__a pad__a--l">${PAD_ARROW}</i>
+    <i class="pad__d pad__d--ur"></i><i class="pad__d pad__d--dr"></i><i class="pad__d pad__d--dl"></i><i class="pad__d pad__d--ul"></i>
+  </div>
+</div>
+
+<div class="rotate" role="alert">
+  <i class="rotate__phone"></i>
+  <b>휴대폰을 가로로 돌려 주세요</b>
+  <span>화면 회전 잠금이 켜져 있다면 풀어 주세요</span>
+</div>
 `;
 
 // ---------------------------------------------------------------------------
@@ -1250,6 +1324,16 @@ export function createHud(root, options) {
   // who plays the run on screen: 'camera' | 'keys' (STAR SLASH on the keyboard) | 'demo'
   let input = 'camera';
   root.setAttribute('data-input', input);
+  // the device: a phone gets its own camera help, a touch screen gets pads for the keyboard mode
+  const device = cfg.device || sniffDevice();
+  let touch = false;
+  function setTouch(on) {
+    if (on === touch) return;
+    touch = on;
+    if (on) root.setAttribute('data-touch', ''); else root.removeAttribute('data-touch');
+    tileDemo = null; // the panel's tag is written again
+  }
+  if (device.mobile) root.setAttribute('data-mobile', '');
   if (mode === 'slash') playerCount = 1; // STAR SLASH is a one-player mode
 
   root.setAttribute('data-players', String(playerCount));
@@ -2810,7 +2894,7 @@ export function createHud(root, options) {
     const demo = !live;
     if (demo !== tileDemo) {
       tileDemo = demo;
-      refs.tileTag.textContent = demo ? (input === 'keys' ? 'KEYBOARD' : 'DEMO') : '나';
+      refs.tileTag.textContent = demo ? (input === 'keys' ? (touch ? 'TOUCH' : 'KEYBOARD') : 'DEMO') : '나';
       refs.tile.classList.toggle('is-demo', demo);
     }
     // no camera and no figure to draw: the panel says what it is for
@@ -3987,7 +4071,8 @@ export function createHud(root, options) {
     // the keyboard keeps a record of its own (it is far more exact than a camera), a demo keeps none
     const kb = input === 'keys';
     const table = kb ? slashKeysBest : slashBest;
-    refs.resEyebrow.textContent = 'STAGE CLEAR · STAR SLASH · ' + SONGS[song].title + ' · ' + DIFFICULTY_LABELS[st.level] + (kb ? ' · 키보드' : '');
+    const kbWord = touch ? '터치' : '키보드';
+    refs.resEyebrow.textContent = 'STAGE CLEAR · STAR SLASH · ' + SONGS[song].title + ' · ' + DIFFICULTY_LABELS[st.level] + (kb ? ' · ' + kbWord : '');
     refs.resTitle.textContent = SLASH_TITLES[st.rank];
     refs.resSub.textContent = '';
     const isNew = input !== 'demo' && st.score > table[st.level] && st.score > 0;
@@ -3997,7 +4082,7 @@ export function createHud(root, options) {
     }
     updateBestLabel();
     refs.resNew.classList.toggle('is-on', isNew);
-    refs.resBest.textContent = DIFFICULTY_LABELS[st.level] + (kb ? ' 키보드' : '') + ' 최고 기록 ' + fmt(table[st.level]);
+    refs.resBest.textContent = DIFFICULTY_LABELS[st.level] + (kb ? ' ' + kbWord : '') + ' 최고 기록 ' + fmt(table[st.level]);
 
     // the rank slams in first, then the stars light up one by one
     refs.rank.setAttribute('data-rank', st.rank);
@@ -4100,7 +4185,7 @@ export function createHud(root, options) {
       const b = slashBest[level];
       const kb = slashKeysBest[level];
       refs.best.textContent = b > 0 ? DIFFICULTY_LABELS[level] + ' 최고 기록 ' + fmt(b)
-        : kb > 0 ? DIFFICULTY_LABELS[level] + ' 키보드 최고 기록 ' + fmt(kb) : '첫 슬래시에 도전해 보세요';
+        : kb > 0 ? DIFFICULTY_LABELS[level] + (touch ? ' 터치' : ' 키보드') + ' 최고 기록 ' + fmt(kb) : '첫 슬래시에 도전해 보세요';
     } else {
       refs.best.textContent = best > 0 ? '최고 기록 ' + fmt(best) : '첫 무대에 도전해 보세요';
     }
@@ -4146,10 +4231,15 @@ export function createHud(root, options) {
       refs.camSection.removeAttribute('data-error');
       return;
     }
-    const def = CAMERA_ERRORS[k];
-    refs.errTitle.textContent = def.title;
-    refs.errDesc.textContent = def.desc;
-    refs.camSection.setAttribute('data-error', k);
+    // Inside another app's web view the camera is usually not ours to open, whatever the error
+    // says: the way out is a real browser. A missing pose model is a different story.
+    const shown = device.inApp && k !== 'model' ? 'inapp' : k;
+    const def = CAMERA_ERRORS[shown];
+    const mob = device.mobile && shown !== 'inapp' ? CAMERA_ERRORS_MOBILE[shown] : null;
+    refs.errTitle.textContent = shown === 'inapp' ? device.inApp + def.title : (mob ? mob.title : def.title);
+    refs.errDesc.textContent = mob ? (mob.desc || (device.ios ? mob.ios : mob.android)) : def.desc;
+    refs.camSection.setAttribute('data-error', shown);
+    refs.copyLabel.textContent = '주소 복사';
     if (screen !== 'camera') showScreen('camera', { keepError: true });
     focusPrimary();
   }
@@ -4326,6 +4416,78 @@ export function createHud(root, options) {
     tileDemo = null; // the panel's tag is written again
   }
 
+  /**
+   * The touch pads of a keyboard run (shown on a touch screen): one per hand, under the thumbs.
+   * A touch is a cut in the direction it lies from the middle of the pad — four ways, or eight
+   * when the chart has diagonal shards (setPads). The game hears on('padDown', { hand, dir }).
+   */
+  let padEight = false;
+  const PAD_DIRS4 = ['r', 'u', 'l', 'd'];
+  const PAD_DIRS8 = ['r', 'ur', 'u', 'ul', 'l', 'dl', 'd', 'dr'];
+  function setPads(eight) {
+    padEight = !!eight;
+    if (padEight) root.setAttribute('data-pad8', ''); else root.removeAttribute('data-pad8');
+  }
+  function onPadDown(e) {
+    const pad = e.currentTarget;
+    if (input !== 'keys' || (screen !== 'play' && screen !== 'countdown')) return;
+    if (e.cancelable) e.preventDefault();
+    const r = pad.getBoundingClientRect();
+    const dx = e.clientX - (r.left + r.width / 2);
+    const dy = (r.top + r.height / 2) - e.clientY; // up is positive
+    const steps = padEight ? 8 : 4;
+    const k = ((Math.round(Math.atan2(dy, dx) / (2 * Math.PI / steps)) % steps) + steps) % steps;
+    const dir = padEight ? PAD_DIRS8[k] : PAD_DIRS4[k];
+    emit('padDown', { hand: pad.getAttribute('data-pad'), dir });
+    const hit = pad.firstElementChild;
+    if (hit && typeof hit.animate === 'function') {
+      const turn = 'rotate(' + (90 - k * (360 / steps)) + 'deg)';
+      hit.animate([
+        { opacity: 0.95, transform: turn + ' scale(0.92)' },
+        { opacity: 0, transform: turn + ' scale(1.06)' },
+      ], { duration: 240, easing: 'cubic-bezier(.2,.8,.3,1)' });
+    }
+  }
+  Array.prototype.forEach.call(root.querySelectorAll('.pad'), (el) => {
+    el.addEventListener('pointerdown', onPadDown);
+    el.addEventListener('contextmenu', (e) => e.preventDefault());
+  });
+  setTouch(device.touch);
+  // a touch on a device that did not look like one (a laptop with a touch screen): pads from then on
+  const onFirstTouch = () => { setTouch(true); window.removeEventListener('touchstart', onFirstTouch); };
+  window.addEventListener('touchstart', onFirstTouch, { passive: true });
+
+  /** setCameraInfo(text): the small line under the camera tips (what the camera and the detector are doing). */
+  function setCameraInfo(text) {
+    const t = text || '';
+    if (refs.camDiag.textContent !== t) refs.camDiag.textContent = t;
+  }
+
+  // out of an in-app browser: KakaoTalk has a link for it, Android an intent; elsewhere the
+  // address is copied for the player to paste into a real browser
+  function openExternal() {
+    const url = location.href;
+    try {
+      if (device.kakao) { location.href = 'kakaotalk://web/openExternal?url=' + encodeURIComponent(url); return; }
+      if (device.android) { location.href = 'intent://' + url.replace(/^https?:\/\//, '') + '#Intent;scheme=https;end'; return; }
+    } catch (e) {
+      /* fall through to the copy */
+    }
+    copyLink();
+  }
+  function copyLink() {
+    const done = (ok) => { refs.copyLabel.textContent = ok ? '주소를 복사했어요' : '주소창의 주소를 복사해 주세요'; };
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        navigator.clipboard.writeText(location.href).then(() => done(true), () => done(false));
+        return;
+      }
+    } catch (e) {
+      /* no clipboard here */
+    }
+    done(false);
+  }
+
   /** keyTap(code): lights the key of the legend that was just pressed (keyboard runs). */
   const keyEls = {};
   Array.prototype.forEach.call(root.querySelectorAll('.tile__keys kbd'), (el) => { keyEls[el.getAttribute('data-key')] = el; });
@@ -4472,6 +4634,8 @@ export function createHud(root, options) {
       case 'start': startMode(el && el.getAttribute('data-players') === '2' ? 2 : 1); break;
       case 'startDemo': startDemoNow(); break;
       case 'startKeys': startKeysNow(); break;
+      case 'openExternal': openExternal(); break;
+      case 'copyLink': copyLink(); break;
       case 'retry': fire('retry'); break;
       case 'menu': fire('menu'); break;
       case 'pause': pauseNow(); break;
@@ -4602,6 +4766,7 @@ export function createHud(root, options) {
     if (tickId) cancelAnimationFrame(tickId);
     root.removeEventListener('click', onClick);
     window.removeEventListener('keydown', onKey);
+    window.removeEventListener('touchstart', onFirstTouch);
     window.removeEventListener('resize', queueLayout);
     if (ro) ro.disconnect();
     listeners.clear();
@@ -4653,6 +4818,12 @@ export function createHud(root, options) {
     setSong, // (songId)  the title's song picker
     setInput, // ('camera' | 'keys' | 'demo')  who plays the run
     keyTap, // (KeyboardEvent.code)  a key of the legend lights up
+    setPads, // (eightWay)  the touch pads of a keyboard run: four directions, or eight; on('padDown', { hand, dir })
+    setCameraInfo, // (text)  small status line of the camera screen
+    device, // { ios, android, mobile, inApp, kakao, touch }
+    get touch() {
+      return touch;
+    },
     layout,
     destroy,
     get screen() {

@@ -250,6 +250,8 @@ function setupSlashRun() {
     demoHands: createDemoHands(chart.notes, { skill: 0.84, seed: demoSeed++ }),
     keys: keysRun ? createKeyHands(chart.notes, judge) : null, // the keyboard feeds the judge itself
   };
+  // on a touch screen the keys are two pads: eight directions when the chart has diagonals
+  if (slash.keys && hud.setPads) hud.setPads(slash.keys.diagonals);
   handReader.reset();
   slashHands = null;
   events.length = 0;
@@ -522,6 +524,19 @@ window.addEventListener('keydown', (e) => {
   slash.keys.keyDown(e.code, songTime(), state === 'play');
   if (hud.keyTap) hud.keyTap(e.code);
 });
+// … and on a touch screen: the HUD's two pads (one per hand) say which way they were touched
+hud.on('padDown', (e) => {
+  if (!keysRun || mode !== 'slash' || !slash || !slash.keys || !e) return;
+  if (state !== 'play' && state !== 'countdown') return;
+  slash.keys.strike(e.hand, e.dir, songTime(), state === 'play');
+});
+// A phone turned upright in the middle of a run (the HUD asks for it to be turned back): pause.
+if (typeof window.matchMedia === 'function') {
+  const upright = window.matchMedia('(orientation: portrait) and (pointer: coarse)');
+  const onTurn = (e) => { if (e.matches) pauseGame(); };
+  if (typeof upright.addEventListener === 'function') upright.addEventListener('change', onTurn);
+  else if (typeof upright.addListener === 'function') upright.addListener(onTurn);
+}
 // A song picked on the title: NOVA idles at its tempo, and its track starts rendering in the
 // background so that pressing start does not have to wait for it.
 hud.on('modeChange', (e) => {
@@ -751,6 +766,7 @@ function adaptQuality(dt) {
 // frame
 // ---------------------------------------------------------------------------
 let lastNow = performance.now();
+let camInfoAt = 0;
 let wall = 0;
 let frameErrors = 0;
 const resultPoseCache = {};
@@ -912,6 +928,15 @@ function frame(now) {
       hud.drawPlayer(demo ? null : video, results);
     } else if (state === 'camera') {
       hud.drawPlayer(video, results);
+      // what the camera and the detector are doing (twice a second): for the player who has to
+      // tell somebody why it does not work
+      if (hud.setCameraInfo && now - camInfoAt > 500) {
+        camInfoAt = now;
+        const td = tracker.debug;
+        hud.setCameraInfo(video.videoWidth > 0
+          ? `카메라 ${video.videoWidth}×${video.videoHeight} · 인식 ${tracker.isReady ? td.delegate : '준비 중'} · ${Math.round(td.fps)}fps`
+          : '');
+      }
     }
     if (DEBUG) drawDebug(now, t, beat, section);
     frameErrors = 0;

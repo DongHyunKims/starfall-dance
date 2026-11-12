@@ -47,13 +47,17 @@ body {
   background: var(--ink);
 }
 
+/* The camera's <video>: never seen, but it has to keep playing. Mobile browsers stop feeding
+   frames to a video they consider invisible, so it is kept just above nothing rather than at
+   opacity 0, and tucked under the stage canvas. */
 #cam {
   position: fixed;
   left: 0;
   top: 0;
-  width: 2px;
-  height: 2px;
-  opacity: 0;
+  z-index: -1;
+  width: 4px;
+  height: 4px;
+  opacity: 0.01;
   pointer-events: none;
 }
 
@@ -72,6 +76,8 @@ body {
   user-select: none;
   -webkit-user-select: none;
   -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  touch-action: manipulation; /* no double-tap zoom in the middle of a run */
 }
 
 .sf h2,
@@ -3740,4 +3746,169 @@ body {
   color: var(--key);
   font: 600 calc(var(--u) * 0.7) / 1 var(--font-ko);
   font-style: normal;
+}
+
+/* ---- phones and touch screens (js/hud.js: data-mobile, data-touch on the root) ---- */
+.sf[data-touch] .in-notouch,
+.sf:not([data-touch]) .in-touch,
+.sf[data-mobile] .in-desktop,
+.sf:not([data-mobile]) .in-mobile {
+  display: none !important;
+}
+
+/* camera error panel: the way out of an in-app browser */
+.screen--camera:not([data-error="inapp"]) .only-inapp { display: none !important; }
+.cam__erractions { flex-wrap: wrap; justify-content: center; }
+
+/* what the camera and the detector are doing, small (handy when somebody reports a problem) */
+.cam__diag {
+  min-height: 1.2em;
+  font: 500 calc(var(--u) * 0.72) / 1.2 var(--font-ko);
+  color: rgba(226, 218, 255, 0.45);
+  font-variant-numeric: tabular-nums;
+}
+
+/* the keyboard mode on a touch screen: the panel points at the pads instead of showing keys */
+.tile__touch {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--u) * 0.4);
+  padding: calc(var(--u) * 1.8) calc(var(--u) * 0.8) calc(var(--u) * 0.6);
+  text-align: center;
+}
+
+.tile__touch b { font: 900 calc(var(--u) * 0.92) / 1.2 var(--font-ko); color: var(--gold); }
+.tile__touch i { font: 500 calc(var(--u) * 0.7) / 1.4 var(--font-ko); font-style: normal; word-break: keep-all; color: rgba(246, 241, 255, 0.72); }
+.sf[data-mode="slash"][data-input="keys"][data-touch] .tile__touch { display: flex; }
+.sf[data-mode="slash"][data-input="keys"][data-touch] .tile__keys { display: none; }
+
+/* the touch pads: one per hand, in the bottom corners, under the thumbs */
+.pads {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: none;
+  pointer-events: none;
+}
+
+.sf[data-touch][data-input="keys"][data-screen="play"] .pads,
+.sf[data-touch][data-input="keys"][data-screen="countdown"] .pads {
+  display: block;
+}
+
+.pad {
+  --key: var(--teal);
+  --w: 90deg;
+  position: absolute;
+  bottom: calc(var(--u) * 2.4 + env(safe-area-inset-bottom, 0px));
+  width: calc(var(--u) * 27);
+  height: calc(var(--u) * 27);
+  border-radius: 50%;
+  pointer-events: auto;
+  touch-action: none;
+  cursor: pointer;
+  background:
+    radial-gradient(circle, rgba(11, 6, 32, 0.1) 0 17%, rgba(11, 6, 32, 0.62) 18% 100%);
+  box-shadow:
+    inset 0 0 0 calc(var(--u) * 0.22) color-mix(in srgb, var(--key) 78%, transparent),
+    0 0 calc(var(--u) * 2.2) color-mix(in srgb, var(--key) 30%, transparent);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+}
+
+.pad--l { left: calc(var(--u) * 2.4 + env(safe-area-inset-left, 0px)); }
+.pad--r { right: calc(var(--u) * 2.4 + env(safe-area-inset-right, 0px)); --key: var(--gold); }
+.sf[data-pad8] .pad { --w: 45deg; }
+
+/* the direction that was just pressed: a wedge of the pad lights up (hud.js turns it) */
+.pad__hit {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  opacity: 0;
+  pointer-events: none;
+  background: conic-gradient(from calc(var(--w) / -2), color-mix(in srgb, var(--key) 80%, #ffffff) 0 var(--w), transparent 0);
+}
+
+.pad__a {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: calc(var(--u) * 5.6);
+  height: calc(var(--u) * 5.6);
+  margin: calc(var(--u) * -2.8) 0 0 calc(var(--u) * -2.8);
+  color: var(--key);
+  pointer-events: none;
+}
+
+.pad__a svg { display: block; width: 100%; height: 100%; fill: currentColor; filter: drop-shadow(0 0 calc(var(--u) * 0.5) color-mix(in srgb, var(--key) 60%, transparent)); }
+.pad__a--u { transform: translateY(calc(var(--u) * -8.2)); }
+.pad__a--r { transform: translateX(calc(var(--u) * 8.2)) rotate(90deg); }
+.pad__a--d { transform: translateY(calc(var(--u) * 8.2)) rotate(180deg); }
+.pad__a--l { transform: translateX(calc(var(--u) * -8.2)) rotate(-90deg); }
+
+/* diagonals: only when the chart has them */
+.pad__d {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: calc(var(--u) * 1.5);
+  height: calc(var(--u) * 1.5);
+  margin: calc(var(--u) * -0.75) 0 0 calc(var(--u) * -0.75);
+  border-radius: 50%;
+  background: var(--key);
+  opacity: 0.75;
+  display: none;
+  pointer-events: none;
+}
+
+.sf[data-pad8] .pad__d { display: block; }
+.pad__d--ur { transform: translate(calc(var(--u) * 6.4), calc(var(--u) * -6.4)); }
+.pad__d--dr { transform: translate(calc(var(--u) * 6.4), calc(var(--u) * 6.4)); }
+.pad__d--dl { transform: translate(calc(var(--u) * -6.4), calc(var(--u) * 6.4)); }
+.pad__d--ul { transform: translate(calc(var(--u) * -6.4), calc(var(--u) * -6.4)); }
+
+/* a phone held upright: the stage is laid out for a wide screen, so ask for a turn.
+   Sized in vw: --u is tiny in portrait. */
+.rotate {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5vw;
+  padding: 8vw;
+  text-align: center;
+  background: rgba(11, 6, 32, 0.97);
+}
+
+.rotate b { font: 900 6.4vw / 1.3 var(--font-ko); color: #ffffff; word-break: keep-all; }
+.rotate span { font: 500 3.9vw / 1.5 var(--font-ko); color: rgba(246, 241, 255, 0.7); word-break: keep-all; }
+
+.rotate__phone {
+  width: 15vw;
+  height: 27vw;
+  border: 1.1vw solid var(--teal);
+  border-radius: 3vw;
+  box-shadow: 0 0 6vw rgba(25, 227, 210, 0.35);
+  animation: rotate-phone 2.6s cubic-bezier(.6, 0, .3, 1) infinite;
+}
+
+@keyframes rotate-phone {
+  0%, 22% { transform: rotate(0deg); }
+  62%, 100% { transform: rotate(-90deg); }
+}
+
+@media (orientation: portrait) and (pointer: coarse) {
+  .rotate { display: flex; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rotate__phone { animation: none; transform: rotate(-90deg); }
 }

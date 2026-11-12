@@ -108,6 +108,9 @@ function makeHand(x, y) {
  *   keyDown(code, songTime, live = true) -> boolean   a key went down (ignore auto-repeat before
  *       calling). true when the key is one of ours. `live: false` (the countdown, a practice
  *       swing) only moves the visible hand.
+ *   strike(hand, dir, songTime, live = true) -> boolean   a press that knows its direction
+ *       already ('l' | 'r', 'u' … 'dr': a touch pad). Judged at once, diagonals included.
+ *   diagonals            true when the chart has diagonal shards (a touch pad then needs 8 ways)
  *   update(songTime)     every frame while the song runs, BEFORE judge.update(): lets go of a
  *                        half-pressed diagonal whose second key never came
  *   onEvents(events)     what judge.update() returned (the shards that are settled)
@@ -249,6 +252,26 @@ export function createKeyHands(notes, judge, opts = {}) {
     return true;
   }
 
+  /** A touch pad: the direction is known at once (one of the eight), nothing to wait for. */
+  function strike(hand, dir, songTime, live = true) {
+    const v = DIRS[dir];
+    if (!v || (hand !== 'l' && hand !== 'r')) return false;
+    const h = hand === 'l' ? 0 : 1;
+    stats.presses++;
+    if (!live || !isNum(songTime)) {
+      swing(h, v[0], v[1], (h === 0 ? -1 : 1) * cfg.homeX, cfg.homeY);
+      return true;
+    }
+    const p = pend[h];
+    if (p) { // a key of this hand was still waiting for its partner: it stands as it is
+      pend[h] = null;
+      const a = DIRS[p.dir];
+      commit(h, p.ts, a[0], a[1], true);
+    }
+    commit(h, songTime, v[0], v[1]);
+    return true;
+  }
+
   function update(songTime) {
     if (!isNum(songTime)) return;
     for (let h = 0; h < 2; h++) {
@@ -374,7 +397,10 @@ export function createKeyHands(notes, judge, opts = {}) {
     frame.r.x = cfg.guardX; frame.r.y = cfg.guardY;
   }
 
-  return { keyDown, update, onEvents, sample, reset, stats };
+  let diagonals = false;
+  for (let i = 0; i < N; i++) if (isDiagonal(i)) { diagonals = true; break; }
+
+  return { keyDown, strike, update, onEvents, sample, reset, stats, diagonals };
 }
 
 /**
