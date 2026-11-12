@@ -9,6 +9,11 @@
 //   ?song=moondrift|starfall|cometrush  that song whatever the title says (&difficulty=easy|normal|hard
 //                overrides the STAR SLASH chart that normally comes with the song)
 //   ?latency=0.12  STAR SLASH: seconds by which the camera's view of the hands is assumed to lag
+//
+// STAR SLASH can also be played on the keyboard ("키보드로 플레이" on the title: WASD for the
+// left hand, the arrow keys for the right; see js/slash/keys.js). Such a run never touches the
+// camera either: `demo` (nobody is being filmed) is true for it, and `keysRun` says whose hands
+// they are.
 //   ?telemetry=1 (see js/telemetry.js) post numbers about the run to the local dev server
 
 import { createStage, RATING_COLORS } from './stage.js';
@@ -24,6 +29,7 @@ import { createHandReader, createDemoHands } from './slash/hands.js';
 import { createSlashJudge, SLASH_TUNING } from './slash/judge.js';
 import { createSlashView } from './slash/view.js';
 import { createSlashHero } from './slash/hero.js';
+import { createKeyHands, KEY_BINDINGS, KEY_JUDGE_TUNING } from './slash/keys.js';
 import {
   TOTAL_BEATS, SEC_PER_BEAT, SONG_DURATION, beatToSec, secToBeat, sectionAtBeat,
   SONGS, DEFAULT_SONG, songById, songForLevel, setSong,
@@ -99,7 +105,7 @@ const slashView = createSlashView(stage);
 const slashHero = createSlashHero({ dancer, view: slashView, scene: stage.scene });
 const handReader = createHandReader();
 const slashStats = {};      // judge.stats() scratch, refilled every frame
-let slash = null;           // { chart, judge, demoHands, opts } of the current run
+let slash = null;           // { chart, judge, demoHands, keys, opts } of the current run
 let slashHands = null;      // this frame's hands (for telemetry / debugging)
 const heroGroove = { beat: null, spb: 0.5, intensity: 0.25, hold: false }; // what keeps NOVA's feet in time (slash mode)
 
@@ -110,7 +116,8 @@ let state = 'loading';
 let mode = 'dance';        // 'dance' (follow the coach) | 'slash' (STAR SLASH)
 let difficulty = 'normal'; // STAR SLASH chart (it comes with the song)
 let songId = DEFAULT_SONG;  // the song of the run (see chooseMode / loadSongThen)
-let demo = FORCE_DEMO;
+let demo = FORCE_DEMO;     // nobody is being filmed: a demo, or a keyboard run
+let keysRun = false;       // STAR SLASH on the keyboard (then `demo` is true as well)
 let playerCount = 1;
 let runId = 0;             // bumps whenever a run starts or is abandoned (cancels stale callbacks)
 let cameraWanted = false;  // the players passed the camera check but the model is still loading
@@ -233,12 +240,15 @@ function goTitle() {
 /** A fresh STAR SLASH run: chart for the chosen difficulty, judge, simulated hands for the demo. */
 function setupSlashRun() {
   const chart = buildChart(difficulty);
-  const opts = demo ? { latencySec: 0 } : (SLASH_LATENCY !== null ? { latencySec: SLASH_LATENCY } : {});
+  const opts = keysRun ? KEY_JUDGE_TUNING
+    : demo ? { latencySec: 0 } : (SLASH_LATENCY !== null ? { latencySec: SLASH_LATENCY } : {});
+  const judge = createSlashJudge(chart.notes, opts);
   slash = {
     chart,
     opts,
-    judge: createSlashJudge(chart.notes, opts),
+    judge,
     demoHands: createDemoHands(chart.notes, { skill: 0.84, seed: demoSeed++ }),
+    keys: keysRun ? createKeyHands(chart.notes, judge) : null, // the keyboard feeds the judge itself
   };
   handReader.reset();
   slashHands = null;
@@ -274,6 +284,7 @@ function startCountdown() {
   // The HUD only resets its own run state when entering from outside a run (pause -> retry
   // stays "inside"), so do it explicitly as well.
   if (hud.setMode) hud.setMode(mode);
+  if (hud.setInput) hud.setInput(keysRun ? 'keys' : demo ? 'demo' : 'camera');
   hud.showScreen('countdown', { players: playerCount, mode });
   if (mode === 'slash') showSlashScore();
   else for (let i = 0; i < playerCount; i++) hud.setScore(0, 0, 1, i);
@@ -324,6 +335,7 @@ function finishRun() {
     handleSlashEvents(slash.judge.update(SONG_DURATION + 10), true); // whatever is left is a MISS
     const st = slash.judge.stats();
     st.difficulty = difficulty;
+    st.input = keysRun ? 'keys' : demo ? 'demo' : 'camera';
     resultStats = st;
     resultStars = st.stars;
     resultsAt = performance.now();
@@ -367,6 +379,7 @@ async function startCameraPath() {
   slashHero.leave();
   stage.setMode('menu');
   if (hud.setMode) hud.setMode(mode);
+  if (hud.setInput) hud.setInput('camera');
   hud.showScreen('camera', { players: playerCount, mode });
   setState('camera');
 
@@ -465,6 +478,7 @@ function loadSongThen(next) {
 hud.on('start', (e) => {
   if (state !== 'title' && state !== 'camera') return;
   music.playSfx('ui');
+  keysRun = false;
   chooseMode(e);
   loadSongThen(() => {
     if (DEMO_ONLY) { runId++; demo = true; startCountdown(); return; }
@@ -476,12 +490,37 @@ hud.on('startDemo', (e) => {
   music.playSfx('ui');
   runId++;
   tracker.stop();
+  keysRun = false;
   // from the camera error panel ("데모로 플레이") the mode chosen on the title stays
   if (state === 'title' || (e && e.mode)) chooseMode(e);
   loadSongThen(() => {
     demo = true;
     startCountdown();
   });
+});
+// STAR SLASH on the keyboard: straight to the countdown, the camera is never asked for
+hud.on('startKeys', (e) => {
+  if (state !== 'title' && state !== 'camera') return;
+  chooseMode({ ...(e || {}), mode: 'slash' });
+  if (mode !== 'slash') return; // (?mode=dance in the URL: there is no keyboard dance)
+  music.playSfx('ui');
+  runId++;
+  tracker.stop();
+  loadSongThen(() => {
+    demo = true;
+    keysRun = true;
+    startCountdown();
+  });
+});
+// The keys of a keyboard run. They are read by position (event.code), so 한/영 does not matter.
+// During the countdown a key is a practice swing: NOVA moves, nothing is judged.
+window.addEventListener('keydown', (e) => {
+  if (!keysRun || mode !== 'slash' || !slash || !slash.keys || !KEY_BINDINGS[e.code]) return;
+  if (state !== 'play' && state !== 'countdown') return;
+  e.preventDefault(); // the arrows are ours for the length of the run
+  if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
+  slash.keys.keyDown(e.code, songTime(), state === 'play');
+  if (hud.keyTap) hud.keyTap(e.code);
 });
 // A song picked on the title: NOVA idles at its tempo, and its track starts rendering in the
 // background so that pressing start does not have to wait for it.
@@ -617,13 +656,14 @@ function drawDebug(now, t, beat, section) {
   const info = stage.renderer.info;
   const lines = [
     `fps ${fps.toFixed(0)}  calls ${info.render.calls}  tris ${(info.render.triangles / 1000).toFixed(0)}k  pr ${stage.renderer.getPixelRatio().toFixed(2)}  quality ${(quality.scale * 100).toFixed(0)}%`,
-    `state ${state}${demo ? ' (demo)' : ''}  mode ${mode}  players ${playerCount}  hud ${hud.screen}  stage ${stage.mode}`,
+    `state ${state}${keysRun ? ' (keys)' : demo ? ' (demo)' : ''}  mode ${mode}  players ${playerCount}  hud ${hud.screen}  stage ${stage.mode}`,
     `t ${t.toFixed(2)}s  beat ${beat.toFixed(2)}  ${section.name}  energy ${energy.toFixed(2)}`,
   ];
   if (mode === 'slash' && slash) {
     const s = slash.judge.stats();
     lines.push(`SLASH ${difficulty}  ${s.score}/${s.maxScore}  combo ${s.combo} x${s.multiplier}  judged ${s.judged}/${s.total}  acc ${(s.accuracy * 100).toFixed(0)}%  rank ${s.rank}`);
     lines.push(`   P ${s.counts.perfect} G ${s.counts.good} B ${s.counts.bad} M ${s.counts.miss}  shards ${slashView.visibleShards}`);
+    if (slash.keys) lines.push(`   keys ${slash.keys.stats.presses}  on a shard ${slash.keys.stats.strikes}  in the air ${slash.keys.stats.empty}`);
     const h = slashHands;
     if (h) lines.push(`   L ${h.l.x.toFixed(2)},${h.l.y.toFixed(2)} v${h.l.speed.toFixed(1)} s${h.l.seen.toFixed(1)}   R ${h.r.x.toFixed(2)},${h.r.y.toFixed(2)} v${h.r.speed.toFixed(1)} s${h.r.seen.toFixed(1)}`);
   }
@@ -776,8 +816,9 @@ function frame(now) {
       for (let i = 0; i < playerCount; i++) results[i] = players[i].demo.sample(t);
     }
     if (slashMode && onStage && slash) {
-      // hands on the play plane: simulated in a demo, read from the camera otherwise
-      slashHands = demo ? slash.demoHands.sample(t) : handReader.read(results[0], t);
+      // hands on the play plane: the keyboard's, simulated in a demo, read from the camera otherwise
+      slashHands = slash.keys ? slash.keys.sample(t, dt, state === 'pause')
+        : demo ? slash.demoHands.sample(t) : handReader.read(results[0], t);
     }
 
     // ---- coach ----
@@ -805,8 +846,11 @@ function frame(now) {
     }
     if (state === 'play' && slashMode) {
       lastSongT = t;
-      slash.judge.push(slashHands);
-      handleSlashEvents(slash.judge.update(t), false);
+      // (a keyboard run hands its cuts to the judge key by key; the hands on screen are for show)
+      if (slash.keys) slash.keys.update(t); else slash.judge.push(slashHands);
+      const judged = slash.judge.update(t);
+      if (slash.keys) slash.keys.onEvents(judged);
+      handleSlashEvents(judged, false);
       hud.setProgress(Math.min(1, Math.max(0, beat / TOTAL_BEATS)));
       hud.setSection(section.name);
       if (!music.isReady && t >= SONG_DURATION) finishRun();
@@ -892,6 +936,7 @@ window.__game = {
   get mode() { return mode; },
   get difficulty() { return difficulty; },
   get song() { return songId; },
+  get input() { return keysRun ? 'keys' : demo ? 'demo' : 'camera'; },
   get slash() { return slash; },
   get hands() { return slashHands; },
   players, events, quality, slashView, slashHero,
@@ -903,6 +948,7 @@ window.__game = {
     if (mode === 'slash' && slash) {
       const left = slash.chart.notes.filter((n) => n.beat >= b + 0.5);
       slash.judge = createSlashJudge(left, slash.opts);
+      if (slash.keys) slash.keys = createKeyHands(left, slash.judge);
       slashView.start({ notes: left, approachSec: slash.chart.approachSec });
       showSlashScore();
       rewindTo = null;

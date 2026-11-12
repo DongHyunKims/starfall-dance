@@ -3684,3 +3684,60 @@ body {
 
   .modeswitch__thumb { transition: none; }
 }
+
+/* ---- STAR SLASH on the keyboard: data-input="keys" on the root (js/hud.js setInput) ---- */
+.sf[data-input="keys"] .in-cam,
+.sf:not([data-input="keys"]) .in-keys {
+  display: none !important;
+}
+
+/* the camera panel carries the key legend instead: W A S D in the left hand's colour, the
+   arrows in the right hand's; a key lights up when it is pressed (hud.keyTap) */
+.tile__keys {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--u) * 0.8);
+  padding: calc(var(--u) * 2.2) calc(var(--u) * 0.4) calc(var(--u) * 0.6);
+}
+
+.sf[data-mode="slash"][data-input="keys"] .tile__keys { display: flex; }
+.sf[data-mode="slash"][data-input="keys"] .tile.is-empty .tile__off { display: none; }
+
+.keypad {
+  --key: var(--teal);
+  display: grid;
+  grid-template-columns: repeat(3, calc(var(--u) * 2.05));
+  grid-template-rows: repeat(2, calc(var(--u) * 2.05)) auto;
+  gap: calc(var(--u) * 0.26);
+}
+
+.keypad--r { --key: var(--gold); }
+
+.keypad kbd {
+  display: grid;
+  place-items: center;
+  border-radius: calc(var(--u) * 0.34);
+  background: var(--key);
+  box-shadow: 0 calc(var(--u) * 0.16) 0 rgba(0, 0, 0, 0.45);
+  color: #0b0620;
+  font: 700 calc(var(--u) * 0.95) / 1 var(--font-display);
+}
+
+.keypad kbd:nth-child(1) { grid-column: 2; grid-row: 1; }
+.keypad kbd:nth-child(2) { grid-column: 1; grid-row: 2; }
+.keypad kbd:nth-child(3) { grid-column: 2; grid-row: 2; }
+.keypad kbd:nth-child(4) { grid-column: 3; grid-row: 2; }
+
+.keypad em {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  margin-top: calc(var(--u) * 0.35);
+  text-align: center;
+  white-space: nowrap;
+  color: var(--key);
+  font: 600 calc(var(--u) * 0.7) / 1 var(--font-ko);
+  font-style: normal;
+}

@@ -123,7 +123,10 @@ const SLASH_WORDS = { perfect: 'PERFECT', good: 'GOOD', bad: 'BAD', miss: 'MISS'
 const SLASH_RANKS = ['S', 'A', 'B', 'C', 'D'];
 const SLASH_RANK_STARS = { S: 5, A: 4, B: 3, C: 2, D: 1 };
 const SLASH_TITLES = { S: '슈퍼노바!', A: '눈부신 궤적', B: '빛나는 궤적', C: '좋은 출발', D: '다시 도전!' };
-const SLASH_HINT = '빛나는 선 방향으로 손을 휘둘러 베세요';
+const SLASH_HINT = '화살표 방향으로 손을 휘둘러 베세요';
+// the same line for a run on the keyboard (data-input="keys" on the root)
+const KEYS_HINT = '화살표와 같은 방향 키를 누르세요 · 청록은 W A S D · 금빛은 방향키';
+const HINT_SPANS = `<span class="in-cam">${SLASH_HINT}</span><span class="in-keys">${KEYS_HINT}</span>`;
 
 const CAMERA_STATUS_SLASH = {
   requesting: '카메라를 준비하는 중…',
@@ -142,7 +145,8 @@ const POP_COUNT = 12; // pooled rating pops: never more than this many on screen
 
 const MODE_KEY = 'starfall.mode';
 const SONG_KEY = 'starfall.song'; // the song picked on the title (each song is one difficulty)
-const SLASH_BEST_KEY = 'starfall.slash.best.'; // + difficulty
+const SLASH_BEST_KEY = 'starfall.slash.best.'; // + difficulty (camera runs)
+const SLASH_KEYS_BEST_KEY = 'starfall.slash.best.keys.'; // + difficulty (keyboard runs: a score of their own)
 
 // "0" .. "9" and "×0" .. "×9": looked up, never built, where a value may change during play
 const DIGIT_TEXT = [];
@@ -713,6 +717,7 @@ const CROWN_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17.5 
 // mode marks: a dancing figure, and a star shard cut in two along its line
 const DANCE_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12.6" cy="4.2" r="2.5"/><path fill="none" stroke="currentColor" stroke-width="2.7" stroke-linecap="round" stroke-linejoin="round" d="M12 9.2v5.6M12 10 6.6 6.2M12 10l5.6 2.8M12 14.8l-3.8 6.4M12 14.8l4.6 5.2"/></svg>';
 const SLASH_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11.6 1.4 18.3 6.8 5.5 14.7 3.6 7.9ZM19 8l1.4 1.1-3.5 13h-9l-1.7-6.2Z"/></svg>';
+const KEYS_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill-rule="evenodd" d="M3.5 5.5h17A2 2 0 0 1 22.500 7.5v9a2 2 0 0 1-2 2h-17a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2ZM5 8.500v2.200h2.200V8.500Zm3.900 0v2.200h2.200V8.500Zm3.900 0v2.200H15V8.500Zm3.900 0v2.200h2.200V8.500ZM5 13.300v2.200h2.200v-2.200Zm3.900 0v2.200H15v-2.200Zm7.800 0v2.200h2.200v-2.200Z"/></svg>';
 
 function btn(kind, act, inner, extra, attrs) {
   return `<button type="button" class="btn btn--${kind}${extra ? ' ' + extra : ''}" data-act="${act}"${attrs ? ' ' + attrs : ''}><i class="btn__bg"><i class="btn__shine"></i></i><span class="btn__label">${inner}</span></button>`;
@@ -920,11 +925,12 @@ function songsMarkup() {
   return h + '<kbd class="levels__key">↑ ↓</kbd></div>';
 }
 
-// the STAR SLASH side of the title: one player with the camera, or the demo (the only button
-// of a demo-only page)
+// the STAR SLASH side of the title: one player with the camera or on the keyboard, or the demo
+// (the only button of a demo-only page)
 const SLASH_ACTIONS = (DEMO_ONLY
   ? btn('primary', 'startDemo', `${PLAY_SVG}<span>데모 보기</span><kbd>SPACE</kbd>`)
   : btn('primary', 'start', `${SLASH_SVG}<span>슬래시 시작</span><kbd>SPACE</kbd>`, '', 'data-players="1"')
+    + btn('ghost', 'startKeys', `${KEYS_SVG}<span>키보드로 플레이</span><kbd>K</kbd>`, 'btn--duo')
     + btn('ghost', 'startDemo', `${PLAY_SVG}<span>데모 보기 <small>(카메라 없이)</small></span>`, 'btn--sm btn--quiet'));
 
 // rating-count rows of the STAR SLASH results ("s" keeps their data-refs apart from the dance rows)
@@ -973,7 +979,7 @@ const TEMPLATE = `
     </div>
     <div class="title__actions pick-dance" style="--i:4">${TITLE_ACTIONS}</div>
     <div class="title__actions pick-slash" style="--i:4">${SLASH_ACTIONS}</div>
-    <p class="title__privacy" style="--i:5">${DEMO_ONLY ? '이 페이지는 데모 버전이에요. NOVA의 무대를 감상해 보세요. 버튼을 누르면 음악이 재생돼요.' : '<span class="pick-dance">혼자서도, 둘이서도! </span><span class="pick-slash">혼자 즐기는 모드예요. </span>카메라 영상은 이 기기 안에서만 처리되고, 저장되거나 전송되지 않아요.'}</p>
+    <p class="title__privacy" style="--i:5">${DEMO_ONLY ? '이 페이지는 데모 버전이에요. NOVA의 무대를 감상해 보세요. 버튼을 누르면 음악이 재생돼요.' : '<span class="pick-dance">혼자서도, 둘이서도! </span><span class="pick-slash">혼자 즐기는 모드예요. 카메라가 없으면 키보드로도 할 수 있어요. </span>카메라 영상은 이 기기 안에서만 처리되고, 저장되거나 전송되지 않아요.'}</p>
   </div>
   <ol class="howto pick-dance">
     <li style="--i:6"><canvas data-ref="how0"></canvas><div><em>01</em><strong>상반신이 보이게 1.5~3m</strong><span>머리부터 허리까지 보이면 OK · 전신도 좋아요</span></div></li>
@@ -982,7 +988,7 @@ const TEMPLATE = `
   </ol>
   <ol class="howto pick-slash">
     <li style="--i:6"><canvas data-ref="sHow0"></canvas><div><em>01</em><strong>손이 화면에 보이게 서기</strong><span>1.5~3m 거리 · 팔을 뻗어도 두 손이 보이게</span></div></li>
-    <li style="--i:7"><canvas data-ref="sHow1"></canvas><div><em>02</em><strong>빛나는 선 방향으로 휘둘러 베기</strong><span>왼손은 청록, 오른손은 금빛 별 조각</span></div></li>
+    <li style="--i:7"><canvas data-ref="sHow1"></canvas><div><em>02</em><strong>화살표 방향으로 휘둘러 베기</strong><span>왼손은 청록, 오른손은 금빛 별 조각</span></div></li>
     <li style="--i:8"><canvas data-ref="sHow2"></canvas><div><em>03</em><strong>콤보를 이어 배수 올리기</strong><span>놓치지 않고 이어 가면 점수가 최대 ×4</span></div></li>
   </ol>
 </section>
@@ -1005,6 +1011,7 @@ const TEMPLATE = `
         <p data-ref="errDesc"></p>
         <div class="cam__erractions">
           ${btn('primary', 'startDemo', `${PLAY_SVG}<span>데모로 플레이</span>`, 'btn--sm')}
+          ${DEMO_ONLY ? '' : btn('ghost', 'startKeys', `${KEYS_SVG}<span>키보드로 플레이</span>`, 'btn--sm only-slash')}
           ${btn('ghost', 'retryCamera', `${RETRY_SVG}<span>다시 시도</span>`, 'btn--sm')}
         </div>
       </div>
@@ -1060,6 +1067,10 @@ const TEMPLATE = `
       <span class="tile__tag"><b data-ref="tileTag">나</b><i class="tile__live">LIVE</i></span>
       <span class="tile__warn"><span class="only-dance">상반신이 보이게 서 주세요</span><span class="only-slash">화면 안으로 들어와 주세요</span></span>
       <span class="tile__off"><b>카메라 꺼짐</b><i>카메라를 켜면 여기에<br>내 모습이 나와요</i></span>
+      <span class="tile__keys" aria-hidden="true">
+        <span class="keypad keypad--l"><kbd data-key="KeyW">W</kbd><kbd data-key="KeyA">A</kbd><kbd data-key="KeyS">S</kbd><kbd data-key="KeyD">D</kbd><em>왼손 · 청록</em></span>
+        <span class="keypad keypad--r"><kbd data-key="ArrowUp">↑</kbd><kbd data-key="ArrowLeft">←</kbd><kbd data-key="ArrowDown">↓</kbd><kbd data-key="ArrowRight">→</kbd><em>오른손 · 금빛</em></span>
+      </span>
     </div>
     <div class="tile__sync">
       <span class="tile__synclabel">싱크</span>
@@ -1083,14 +1094,14 @@ const TEMPLATE = `
     <canvas class="lane__canvas" data-ref="laneCanvas"></canvas>
   </div>
   <div class="spops" aria-hidden="true">${popMarkup()}</div>
-  <div class="shint"><div class="shint__plate" data-ref="shint">${SLASH_SVG}<span>${SLASH_HINT}</span></div></div>
+  <div class="shint"><div class="shint__plate" data-ref="shint">${SLASH_SVG}<span>${HINT_SPANS}</span></div></div>
 </section>
 
 <section class="screen screen--countdown" data-name="countdown">
   <div class="count">
     <div class="count__ring" data-ref="countRing"></div>
     <div class="count__num" data-ref="countNum">3</div>
-    <p class="count__hint"><span class="only-1p only-dance">NOVA를 거울처럼 따라 하세요</span><span class="only-2p only-dance">P1 왼쪽 · P2 오른쪽 · NOVA를 거울처럼!</span><span class="only-slash">${SLASH_HINT}</span></p>
+    <p class="count__hint"><span class="only-1p only-dance">NOVA를 거울처럼 따라 하세요</span><span class="only-2p only-dance">P1 왼쪽 · P2 오른쪽 · NOVA를 거울처럼!</span><span class="only-slash">${HINT_SPANS}</span></p>
   </div>
 </section>
 
@@ -1231,7 +1242,14 @@ export function createHud(root, options) {
   best = readBest(songBestKey(song));
   let layoutMode = ''; // the mode the canvases were last laid out for
   const slashBest = {};
-  for (const d of DIFFICULTIES) slashBest[d] = readStoredScore(SLASH_BEST_KEY + d);
+  const slashKeysBest = {};
+  for (const d of DIFFICULTIES) {
+    slashBest[d] = readStoredScore(SLASH_BEST_KEY + d);
+    slashKeysBest[d] = readStoredScore(SLASH_KEYS_BEST_KEY + d);
+  }
+  // who plays the run on screen: 'camera' | 'keys' (STAR SLASH on the keyboard) | 'demo'
+  let input = 'camera';
+  root.setAttribute('data-input', input);
   if (mode === 'slash') playerCount = 1; // STAR SLASH is a one-player mode
 
   root.setAttribute('data-players', String(playerCount));
@@ -2792,7 +2810,7 @@ export function createHud(root, options) {
     const demo = !live;
     if (demo !== tileDemo) {
       tileDemo = demo;
-      refs.tileTag.textContent = demo ? 'DEMO' : '나';
+      refs.tileTag.textContent = demo ? (input === 'keys' ? 'KEYBOARD' : 'DEMO') : '나';
       refs.tile.classList.toggle('is-demo', demo);
     }
     // no camera and no figure to draw: the panel says what it is for
@@ -3892,7 +3910,7 @@ export function createHud(root, options) {
   }
 
   function recordBest(score) {
-    const isNew = score > best && score > 0;
+    const isNew = input !== 'demo' && score > best && score > 0; // a demo is nobody's record
     if (isNew) {
       best = score;
       writeBest(best, songBestKey(song));
@@ -3966,17 +3984,20 @@ export function createHud(root, options) {
     res.duo = false;
     refs.resSection.setAttribute('data-mode', 'solo');
     refs.resSection.removeAttribute('data-winner');
-    refs.resEyebrow.textContent = 'STAGE CLEAR · STAR SLASH · ' + SONGS[song].title + ' · ' + DIFFICULTY_LABELS[st.level];
+    // the keyboard keeps a record of its own (it is far more exact than a camera), a demo keeps none
+    const kb = input === 'keys';
+    const table = kb ? slashKeysBest : slashBest;
+    refs.resEyebrow.textContent = 'STAGE CLEAR · STAR SLASH · ' + SONGS[song].title + ' · ' + DIFFICULTY_LABELS[st.level] + (kb ? ' · 키보드' : '');
     refs.resTitle.textContent = SLASH_TITLES[st.rank];
     refs.resSub.textContent = '';
-    const isNew = st.score > slashBest[st.level] && st.score > 0;
+    const isNew = input !== 'demo' && st.score > table[st.level] && st.score > 0;
     if (isNew) {
-      slashBest[st.level] = st.score;
-      writeStored(SLASH_BEST_KEY + st.level, st.score);
+      table[st.level] = st.score;
+      writeStored((kb ? SLASH_KEYS_BEST_KEY : SLASH_BEST_KEY) + st.level, st.score);
     }
     updateBestLabel();
     refs.resNew.classList.toggle('is-on', isNew);
-    refs.resBest.textContent = DIFFICULTY_LABELS[st.level] + ' 최고 기록 ' + fmt(slashBest[st.level]);
+    refs.resBest.textContent = DIFFICULTY_LABELS[st.level] + (kb ? ' 키보드' : '') + ' 최고 기록 ' + fmt(table[st.level]);
 
     // the rank slams in first, then the stars light up one by one
     refs.rank.setAttribute('data-rank', st.rank);
@@ -4075,8 +4096,11 @@ export function createHud(root, options) {
   // the title's song card: the best of the side that is showing (STAR SLASH: per difficulty)
   function updateBestLabel() {
     if (pick === 'slash') {
+      // the camera record; someone who only plays on the keyboard sees that one instead
       const b = slashBest[level];
-      refs.best.textContent = b > 0 ? DIFFICULTY_LABELS[level] + ' 최고 기록 ' + fmt(b) : '첫 슬래시에 도전해 보세요';
+      const kb = slashKeysBest[level];
+      refs.best.textContent = b > 0 ? DIFFICULTY_LABELS[level] + ' 최고 기록 ' + fmt(b)
+        : kb > 0 ? DIFFICULTY_LABELS[level] + ' 키보드 최고 기록 ' + fmt(kb) : '첫 슬래시에 도전해 보세요';
     } else {
       refs.best.textContent = best > 0 ? '최고 기록 ' + fmt(best) : '첫 무대에 도전해 보세요';
     }
@@ -4289,6 +4313,31 @@ export function createHud(root, options) {
     setSongPick(id, false);
   }
 
+  /**
+   * setInput('camera' | 'keys' | 'demo'): who plays the run that is about to be shown. On the
+   * keyboard the camera panel carries the key legend and the hint lines name the keys; the
+   * results keep a keyboard record of their own, and a demo leaves the records alone.
+   */
+  function setInput(kind) {
+    const v = kind === 'keys' || kind === 'demo' ? kind : 'camera';
+    if (v === input) return;
+    input = v;
+    root.setAttribute('data-input', v);
+    tileDemo = null; // the panel's tag is written again
+  }
+
+  /** keyTap(code): lights the key of the legend that was just pressed (keyboard runs). */
+  const keyEls = {};
+  Array.prototype.forEach.call(root.querySelectorAll('.tile__keys kbd'), (el) => { keyEls[el.getAttribute('data-key')] = el; });
+  function keyTap(code) {
+    const el = keyEls[code];
+    if (!el || typeof el.animate !== 'function') return;
+    el.animate([
+      { transform: 'scale(0.86)', filter: 'brightness(2.4)' },
+      { transform: 'scale(1)', filter: 'brightness(1)' },
+    ], { duration: 190, easing: 'cubic-bezier(.2,.8,.3,1)' });
+  }
+
   // the how-to line of a STAR SLASH run: up for the first seconds of play, once per run
   let hintDone = false;
   function syncHint(name) {
@@ -4411,10 +4460,18 @@ export function createHud(root, options) {
     emit('startDemo', { players: count, mode: m, difficulty: level, song });
   }
 
+  // STAR SLASH on the keyboard: no camera screen, the game goes straight to the countdown
+  function startKeysNow() {
+    if (DEMO_ONLY || !gate('startKeys')) return;
+    setPlayers(1);
+    emit('startKeys', { players: 1, mode: 'slash', difficulty: level, song });
+  }
+
   function doAct(act, el) {
     switch (act) {
       case 'start': startMode(el && el.getAttribute('data-players') === '2' ? 2 : 1); break;
       case 'startDemo': startDemoNow(); break;
+      case 'startKeys': startKeysNow(); break;
       case 'retry': fire('retry'); break;
       case 'menu': fire('menu'); break;
       case 'pause': pauseNow(); break;
@@ -4491,6 +4548,13 @@ export function createHud(root, options) {
         return;
       }
     }
+    // K: STAR SLASH on the keyboard (read by position, so it works with 한/영 either way)
+    if (e.code === 'KeyK' && screen === 'title' && pick === 'slash') {
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      startKeysNow();
+      e.preventDefault();
+      return;
+    }
     if ((k === '1' || k === '2' || k === '3') && screen === 'title') {
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       if (pick === 'slash') setSongPick(SONG_IDS[+k - 1], true); // 1 · 2 · 3: the song (easy, normal, hard)
@@ -4558,6 +4622,7 @@ export function createHud(root, options) {
 
   // v2 API at a glance (every `player` is 0 | 1 and defaults to 0, so v1 callers work unchanged):
   //   on('start' | 'startDemo', ({ players, mode, difficulty, song }) => …)   on('cameraReady', ({ players, mode }) => …)
+  //   on('startKeys', ({ players: 1, mode: 'slash', difficulty, song }) => …)   STAR SLASH on the keyboard (no camera screen)
   //   on('modeChange', ({ mode, difficulty, song }) => …)   the title's mode switch / song picker was used
   //   'retry' | 'menu' | 'pause' | 'resume' · on('countdownTick', n) · on('countdownDone') · on('resultsStars', stars)
   //   per frame: updateTimeline · setSync (each player) · drawPlayer   (no allocation, no layout)
@@ -4586,6 +4651,8 @@ export function createHud(root, options) {
     setPlayers,
     setDifficulty, // ('easy' | 'normal' | 'hard')
     setSong, // (songId)  the title's song picker
+    setInput, // ('camera' | 'keys' | 'demo')  who plays the run
+    keyTap, // (KeyboardEvent.code)  a key of the legend lights up
     layout,
     destroy,
     get screen() {
