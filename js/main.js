@@ -30,6 +30,7 @@ import { createSlashJudge, SLASH_TUNING } from './slash/judge.js';
 import { createSlashView } from './slash/view.js';
 import { createSlashHero } from './slash/hero.js';
 import { createKeyHands, KEY_BINDINGS, KEY_JUDGE_TUNING } from './slash/keys.js';
+import { slashJudgeOptions, fxScale, qualityScale } from './settings.js';
 import {
   TOTAL_BEATS, SEC_PER_BEAT, SONG_DURATION, beatToSec, secToBeat, sectionAtBeat,
   SONGS, DEFAULT_SONG, songById, songForLevel, setSong,
@@ -116,6 +117,7 @@ let state = 'loading';
 let mode = 'dance';        // 'dance' (follow the coach) | 'slash' (STAR SLASH)
 let difficulty = 'normal'; // STAR SLASH chart (it comes with the song)
 let songId = DEFAULT_SONG;  // the song of the run (see chooseMode / loadSongThen)
+let settings = hud.settings; // the player's settings (volumes, timing offset, judging, effects, quality)
 let demo = FORCE_DEMO;     // nobody is being filmed: a demo, or a keyboard run
 let keysRun = false;       // STAR SLASH on the keyboard (then `demo` is true as well)
 let playerCount = 1;
@@ -240,15 +242,21 @@ function goTitle() {
 /** A fresh STAR SLASH run: chart for the chosen difficulty, judge, simulated hands for the demo. */
 function setupSlashRun() {
   const chart = buildChart(difficulty);
-  const opts = keysRun ? KEY_JUDGE_TUNING
-    : demo ? { latencySec: 0 } : (SLASH_LATENCY !== null ? { latencySec: SLASH_LATENCY } : {});
+  // The player's settings (js/settings.js) for this run: the timing offset is judge latency —
+  // a hand, or a key, at song time t counts for t - offset — and the camera judge is as
+  // forgiving as "판정 난이도" says. A demo plays itself: neither applies.
+  const offset = settings.offsetMs / 1000;
+  const opts = keysRun ? { ...KEY_JUDGE_TUNING, latencySec: offset }
+    : demo ? { latencySec: 0 }
+      : { ...slashJudgeOptions(settings.judge), latencySec: (SLASH_LATENCY !== null ? SLASH_LATENCY : SLASH_TUNING.latencySec) + offset };
   const judge = createSlashJudge(chart.notes, opts);
   slash = {
     chart,
     opts,
     judge,
     demoHands: createDemoHands(chart.notes, { skill: 0.84, seed: demoSeed++ }),
-    keys: keysRun ? createKeyHands(chart.notes, judge) : null, // the keyboard feeds the judge itself
+    // the keyboard feeds the judge itself
+    keys: keysRun ? createKeyHands(chart.notes, judge, { latencySec: offset }) : null,
   };
   // on a touch screen the keys are two pads: eight directions when the chart has diagonals
   if (slash.keys && hud.setPads) hud.setPads(slash.keys.diagonals);
@@ -728,7 +736,27 @@ function applyQuality() {
   stage.resize(window.innerWidth, window.innerHeight);
   quality.slowFor = 0; quality.fastFor = 0; quality.cooldown = 1.5;
 }
+/** "그래픽 품질": 'auto' adapts as above; 'low' / 'high' hold a fixed share of the pixel budget. */
+function setQualityMode(mode) {
+  const fixed = qualityScale(mode);
+  const was = quality.fixed;
+  quality.fixed = fixed;
+  quality.trial = null;
+  quality.locked = 0;
+  if (fixed === null) {
+    if (was === null || was === undefined) return; // it was adapting already
+    quality.ceiling = 1;
+    quality.scale = 1; // start from the top again and let it find its level
+    applyQuality();
+    return;
+  }
+  if (quality.scale !== fixed) {
+    quality.scale = fixed;
+    applyQuality();
+  }
+}
 function adaptQuality(dt) {
+  if (quality.fixed !== null && quality.fixed !== undefined) return; // the player chose
   // Only a run is representative: menus and the results screen have their own (CSS-heavy) load
   // and no need for a locked frame rate.
   if (document.hidden || state !== 'play') return;
@@ -761,6 +789,39 @@ function adaptQuality(dt) {
     applyQuality();
   }
 }
+
+// ---------------------------------------------------------------------------
+// settings (the window is the HUD's; js/settings.js says what each one means)
+// ---------------------------------------------------------------------------
+const FX_BASE = {
+  bloom: stage.tuning.bloomStrength, stageFx: stage.tuning.fxPower, stageSparks: stage.tuning.fxSparks,
+  edge: stage.tuning.edgeGlow, wave: stage.tuning.wavePower,
+  lane: slashView.tuning.fxPower, laneSparks: slashView.tuning.sparks, comet: slashView.tuning.cometPower,
+};
+let sfxPreviewAt = 0;
+function applySettings(next) {
+  if (!next) return;
+  settings = next;
+  if (music.setMusicVolume) music.setMusicVolume(next.music);
+  if (music.setSfxVolume) music.setSfxVolume(next.sfx);
+  const fx = fxScale(next.fx);
+  stage.tuning.bloomStrength = FX_BASE.bloom * fx.bloom;
+  stage.tuning.fxPower = FX_BASE.stageFx * fx.stage;
+  stage.tuning.fxSparks = FX_BASE.stageSparks * fx.sparks;
+  stage.tuning.edgeGlow = FX_BASE.edge * fx.stage;
+  stage.tuning.wavePower = FX_BASE.wave * fx.stage;
+  slashView.tuning.fxPower = FX_BASE.lane * fx.lane;
+  slashView.tuning.sparks = FX_BASE.laneSparks * fx.sparks;
+  slashView.tuning.cometPower = FX_BASE.comet * (0.5 + 0.5 * fx.lane);
+  setQualityMode(next.quality);
+  // moving the effects slider is heard at once
+  if (next.changed === 'sfx' && performance.now() - sfxPreviewAt > 140) {
+    sfxPreviewAt = performance.now();
+    music.playSfx('ui');
+  }
+}
+hud.on('settings', applySettings);
+applySettings(settings);
 
 // ---------------------------------------------------------------------------
 // frame
@@ -872,10 +933,12 @@ function frame(now) {
       if (!music.isReady && t >= SONG_DURATION) finishRun();
     } else if (state === 'play') {
       lastSongT = t;
+      // the timing offset: a pose at song time t counts for t - offset (a demo dances on the beat)
+      const tj = demo ? t : t - settings.offsetMs / 1000;
       for (let i = 0; i < playerCount; i++) {
         const P = players[i];
-        P.judge.pushSample(t, results[i]);
-        handleEvents(i, P.judge.update(t), false);
+        P.judge.pushSample(tj, results[i]);
+        handleEvents(i, P.judge.update(tj), false);
         // live read-out: how close is this player to what the coach has been doing just now
         P.live.push(t, coach);
         const m = P.live.match(results[i]);
@@ -962,6 +1025,7 @@ window.__game = {
   get difficulty() { return difficulty; },
   get song() { return songId; },
   get input() { return keysRun ? 'keys' : demo ? 'demo' : 'camera'; },
+  get settings() { return settings; },
   get slash() { return slash; },
   get hands() { return slashHands; },
   players, events, quality, slashView, slashHero,
@@ -973,7 +1037,7 @@ window.__game = {
     if (mode === 'slash' && slash) {
       const left = slash.chart.notes.filter((n) => n.beat >= b + 0.5);
       slash.judge = createSlashJudge(left, slash.opts);
-      if (slash.keys) slash.keys = createKeyHands(left, slash.judge);
+      if (slash.keys) slash.keys = createKeyHands(left, slash.judge, { latencySec: slash.opts.latencySec || 0 });
       slashView.start({ notes: left, approachSec: slash.chart.approachSec });
       showSlashScore();
       rewindTo = null;

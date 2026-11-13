@@ -103,7 +103,9 @@ function makeHand(x, y) {
  * The player's hands on the keyboard, for one run.
  * @param {object[]} notes  chart notes ({ id, time, x, y, hand: 'l'|'r'|'any', dir, … })
  * @param {{ push(frame: object): void }} judge  the run's judge, created with KEY_JUDGE_TUNING
- * @param {Partial<typeof KEY_HANDS_DEFAULTS> & { windowBefore?: number, windowAfter?: number, goodAngle?: number }} [opts]
+ * @param {Partial<typeof KEY_HANDS_DEFAULTS> & { windowBefore?: number, windowAfter?: number, goodAngle?: number, latencySec?: number }} [opts]
+ *        latencySec: the judge's own latencySec when it is not 0 (the player's timing offset):
+ *        a key at song time t then counts as a cut at t - latencySec, for the judge and here alike.
  * @returns
  *   keyDown(code, songTime, live = true) -> boolean   a key went down (ignore auto-repeat before
  *       calling). true when the key is one of ours. `live: false` (the countdown, a practice
@@ -124,6 +126,7 @@ export function createKeyHands(notes, judge, opts = {}) {
   const before = isNum(opts.windowBefore) ? opts.windowBefore : KEY_JUDGE_TUNING.windowBefore;
   const after = isNum(opts.windowAfter) ? opts.windowAfter : KEY_JUDGE_TUNING.windowAfter;
   const goodAngle = isNum(opts.goodAngle) ? opts.goodAngle : KEY_JUDGE_TUNING.goodAngle;
+  const lat = isNum(opts.latencySec) ? opts.latencySec : 0;
 
   const list = (Array.isArray(notes) ? notes : [])
     .filter((n) => n && isNum(n.time) && isNum(n.x) && isNum(n.y))
@@ -180,10 +183,10 @@ export function createKeyHands(notes, judge, opts = {}) {
     mine.seen = 1;
     mine.vx = dx * cfg.strokeSpeed; mine.vy = dy * cfg.strokeSpeed; mine.speed = cfg.strokeSpeed;
     mine.x = x - dx * half; mine.y = y - dy * half;
-    shot.t = ts - dt;
+    shot.t = ts - dt + lat; // (the judge takes its latency off again)
     judge.push(shot);
     mine.x = x + dx * half; mine.y = y + dy * half;
-    shot.t = ts + dt;
+    shot.t = ts + dt + lat;
     judge.push(shot);
     mine.seen = 0; // out of sight again: the judge never sees the hand between two keys
     judge.push(shot);
@@ -224,6 +227,7 @@ export function createKeyHands(notes, judge, opts = {}) {
       swing(h, v[0], v[1], (h === 0 ? -1 : 1) * cfg.homeX, cfg.homeY);
       return true;
     }
+    const ts = songTime - lat;
     const p = pend[h];
     if (p) {
       pend[h] = null;
@@ -237,10 +241,10 @@ export function createKeyHands(notes, judge, opts = {}) {
       const a = DIRS[p.dir];
       commit(h, p.ts, a[0], a[1], true);
     }
-    const i = pickTarget(h, songTime, v[0], v[1]);
+    const i = pickTarget(h, ts, v[0], v[1]);
     if (i >= 0 && isDiagonal(i)) {
       const slot = pendSlot[h];
-      slot.ts = songTime; slot.dir = dir; slot.until = songTime + cfg.chordSec;
+      slot.ts = ts; slot.dir = dir; slot.until = songTime + cfg.chordSec;
       pend[h] = slot;
       // the blade is already on its way — along the arrow when this key is half of it
       const nd = DIRS[list[i].dir];
@@ -248,7 +252,7 @@ export function createKeyHands(notes, judge, opts = {}) {
       swing(h, half ? nd[0] : v[0], half ? nd[1] : v[1], list[i].x, list[i].y);
       return true;
     }
-    commit(h, songTime, v[0], v[1]);
+    commit(h, ts, v[0], v[1]);
     return true;
   }
 
@@ -268,7 +272,7 @@ export function createKeyHands(notes, judge, opts = {}) {
       const a = DIRS[p.dir];
       commit(h, p.ts, a[0], a[1], true);
     }
-    commit(h, songTime, v[0], v[1]);
+    commit(h, songTime - lat, v[0], v[1]);
     return true;
   }
 
@@ -354,7 +358,7 @@ export function createKeyHands(notes, judge, opts = {}) {
       // between keys: in the guard, or up where the cut of the next shard starts
       let rx = side * cfg.guardX + cfg.sway * Math.sin(clock * 1.7 + h * 2.1);
       let ry = cfg.guardY + cfg.sway * Math.sin(clock * 2.3 + h * 1.3);
-      const i = isNum(t) ? nextDue(h, t) : -1;
+      const i = isNum(t) ? nextDue(h, t - lat) : -1;
       if (i >= 0) {
         const d = DIRS[list[i].dir];
         // (an any-direction shard: from the outside in)

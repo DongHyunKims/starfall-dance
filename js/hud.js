@@ -17,6 +17,7 @@
 // ---------------------------------------------------------------------------
 
 import { SONGS, SONG_IDS, DEFAULT_SONG, timingOf } from './song.js';
+import { SETTINGS_DEFAULTS, OFFSET_LIMIT_MS, OFFSET_STEP_MS, loadSettings, saveSettings, sanitizeSettings, padScale } from './settings.js';
 
 const RATING_ORDER = ['perfect', 'super', 'good', 'ok', 'miss'];
 
@@ -747,6 +748,14 @@ function writeStored(key, value) {
   }
 }
 
+function removeStored(key) {
+  try {
+    window.localStorage.removeItem(key);
+  } catch (e) {
+    /* nothing was stored */
+  }
+}
+
 function readStoredScore(key) {
   const v = parseInt(readStored(key), 10);
   return Number.isFinite(v) && v > 0 ? v : 0;
@@ -766,6 +775,7 @@ const CROWN_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17.5 
 // mode marks: a dancing figure, and a star shard cut in two along its line
 const DANCE_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12.6" cy="4.2" r="2.5"/><path fill="none" stroke="currentColor" stroke-width="2.7" stroke-linecap="round" stroke-linejoin="round" d="M12 9.2v5.6M12 10 6.6 6.2M12 10l5.6 2.8M12 14.8l-3.8 6.4M12 14.8l4.6 5.2"/></svg>';
 const SLASH_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11.6 1.4 18.3 6.8 5.5 14.7 3.6 7.9ZM19 8l1.4 1.1-3.5 13h-9l-1.7-6.2Z"/></svg>';
+const GEAR_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill-rule="evenodd" d="M10.300 2h3.400l.5 2.600a7.600 7.600 0 0 1 1.900 1.100l2.500-.9 1.700 3-2 1.700a7.800 7.800 0 0 1 0 2.200l2 1.700-1.700 3-2.500-.9a7.600 7.600 0 0 1-1.900 1.100l-.5 2.600h-3.400l-.5-2.600a7.600 7.600 0 0 1-1.900-1.100l-2.500.9-1.700-3 2-1.700a7.800 7.800 0 0 1 0-2.200l-2-1.700 1.700-3 2.500.9a7.600 7.600 0 0 1 1.900-1.100ZM12 8.600a3.400 3.400 0 1 0 0 6.800 3.400 3.400 0 0 0 0-6.800Z"/></svg>';
 const TOUCH_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 2.5a2 2 0 0 1 2 2V10l6.300 1.200a2.500 2.500 0 0 1 2 2.900l-.9 5a3 3 0 0 1-3 2.400H10.600a3 3 0 0 1-2.300-1.100L3.700 14.800a1.700 1.700 0 0 1 2.500-2.300L7 13.300V4.500a2 2 0 0 1 2-2Z"/></svg>';
 const PAD_ARROW = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.500 20.500 14h-5v6.500h-7V14h-5Z"/></svg>';
 const KEYS_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill-rule="evenodd" d="M3.5 5.5h17A2 2 0 0 1 22.500 7.5v9a2 2 0 0 1-2 2h-17a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2ZM5 8.500v2.200h2.200V8.500Zm3.900 0v2.200h2.200V8.500Zm3.900 0v2.200H15V8.500Zm3.900 0v2.200h2.200V8.500ZM5 13.300v2.200h2.200v-2.200Zm3.900 0v2.200H15v-2.200Zm7.800 0v2.200h2.200v-2.200Z"/></svg>';
@@ -997,6 +1007,31 @@ function slashRows() {
   return h;
 }
 
+// the settings window (js/settings.js says what each one is): a row is a name, a control, a value
+const seg = (key, options) => `<div class="seg" role="radiogroup" data-set="${key}">${options.map(([v, t]) => `<button type="button" role="radio" aria-checked="false" data-act="setOpt" data-value="${v}">${t}</button>`).join('')}</div>`;
+const SETTINGS_MARKUP = `
+<div class="settings" data-ref="settings" role="dialog" aria-modal="true" aria-label="설정">
+  <div class="settings__panel">
+    <div class="settings__head">${GEAR_SVG}<h2>설정</h2><button type="button" class="settings__x" data-act="closeSettings" aria-label="닫기">✕</button></div>
+    <div class="settings__body">
+      <label class="srow"><span class="srow__name">음악 음량</span><input type="range" min="0" max="100" step="5" data-set="music" aria-label="음악 음량"><b class="srow__val" data-ref="setMusicVal">100</b></label>
+      <label class="srow"><span class="srow__name">효과음 음량</span><input type="range" min="0" max="100" step="5" data-set="sfx" aria-label="효과음 음량"><b class="srow__val" data-ref="setSfxVal">100</b></label>
+      <label class="srow"><span class="srow__name">타이밍 보정<small>늦게 치는 편이면 +, 빨리 치는 편이면 −</small></span><input type="range" min="${-OFFSET_LIMIT_MS}" max="${OFFSET_LIMIT_MS}" step="${OFFSET_STEP_MS}" data-set="offsetMs" aria-label="타이밍 보정"><b class="srow__val" data-ref="setOffsetVal">0ms</b></label>
+      <div class="srow"><span class="srow__name">판정 난이도<small>카메라로 하는 스타 슬래시</small></span>${seg('judge', [['easy', '너그럽게'], ['normal', '보통'], ['strict', '엄격하게']])}</div>
+      <div class="srow"><span class="srow__name">화면 효과<small>번쩍임과 빛 번짐</small></span>${seg('fx', [['normal', '보통'], ['low', '약하게']])}</div>
+      <div class="srow"><span class="srow__name">그래픽 품질<small>화면이 끊기면 낮음으로</small></span>${seg('quality', [['auto', '자동'], ['low', '낮음'], ['high', '높음']])}</div>
+      <div class="srow in-touch"><span class="srow__name">터치 패드 크기</span>${seg('pad', [['s', '작게'], ['m', '보통'], ['l', '크게']])}</div>
+      <div class="srow"><span class="srow__name">기록 초기화<small>저장된 최고 기록을 모두 지워요</small></span><button type="button" class="minibtn" data-act="resetRecords" data-ref="resetBtn">지우기</button></div>
+    </div>
+    <div class="settings__foot">
+      <span class="settings__note">판정 난이도와 타이밍 보정은 다음 판부터 적용돼요</span>
+      <button type="button" class="linkbtn" data-act="resetSettings">기본값으로</button>
+      <button type="button" class="minibtn minibtn--go" data-act="closeSettings" data-ref="settingsDone">닫기</button>
+    </div>
+  </div>
+</div>
+`;
+
 const TEMPLATE = `
 <section class="screen screen--loading" data-name="loading">
   <div class="sky"><i class="sky__stars"></i><i class="sky__stars sky__stars--b"></i><i class="sky__disc"></i></div>
@@ -1010,6 +1045,7 @@ const TEMPLATE = `
 
 <section class="screen screen--title" data-name="title" data-ref="titleSection">
   <div class="title__scrim"></div>
+  <button type="button" class="gearbtn" data-act="openSettings" aria-label="설정">${GEAR_SVG}<span>설정</span></button>
   <div class="title__col">
     <div class="eyebrow" style="--i:0">${STAR_SVG}<span class="pick-dance">NOVA LIVE · 카메라 댄스 스테이지</span><span class="pick-slash">NOVA LIVE · 스타 슬래시</span></div>
     <div class="title__logo" style="--i:1">${logo('')}</div>
@@ -1169,6 +1205,7 @@ const TEMPLATE = `
       ${btn('primary', 'resume', `${PLAY_SVG}<span>계속하기</span><kbd>ESC</kbd>`)}
       ${btn('ghost', 'retry', `${RETRY_SVG}<span>다시 하기</span>`)}
       ${btn('ghost', 'menu', '<span>메뉴로</span>')}
+      ${btn('ghost', 'openSettings', `${GEAR_SVG}<span>설정</span>`, 'btn--quiet')}
     </div>
   </div>
 </section>
@@ -1220,6 +1257,7 @@ const TEMPLATE = `
   </div>
 </div>
 
+${SETTINGS_MARKUP}
 <div class="rotate" role="alert">
   <i class="rotate__phone"></i>
   <b>휴대폰을 가로로 돌려 주세요</b>
@@ -4403,6 +4441,119 @@ export function createHud(root, options) {
     setSongPick(id, false);
   }
 
+  // ---- settings window -------------------------------------------------------------------------
+  // The HUD keeps the settings (js/settings.js), shows them, and tells the game on('settings',
+  // settings) whenever one changes; what only concerns the HUD (pad size, how bright its own
+  // flashes are) it applies itself.
+  let settings = sanitizeSettings(cfg.settings || loadSettings());
+  let settingsOpen = false;
+  let settingsFrom = null; // what had the focus before the window opened
+  let resetArmedAt = 0;
+  const setInputs = Array.prototype.slice.call(root.querySelectorAll('.settings input[data-set]'));
+  const setSegs = Array.prototype.slice.call(root.querySelectorAll('.settings .seg'));
+
+  function applyOwnSettings() {
+    root.style.setProperty('--pad-scale', String(padScale(settings.pad)));
+    root.setAttribute('data-fx', settings.fx);
+  }
+
+  function syncSettings() {
+    for (const el of setInputs) {
+      const k = el.getAttribute('data-set');
+      el.value = String(k === 'offsetMs' ? settings.offsetMs : Math.round(settings[k] * 100));
+    }
+    refs.setMusicVal.textContent = String(Math.round(settings.music * 100));
+    refs.setSfxVal.textContent = String(Math.round(settings.sfx * 100));
+    refs.setOffsetVal.textContent = (settings.offsetMs > 0 ? '+' : '') + settings.offsetMs + 'ms';
+    for (const g of setSegs) {
+      const k = g.getAttribute('data-set');
+      for (const b of g.children) {
+        const on = b.getAttribute('data-value') === settings[k];
+        b.classList.toggle('is-on', on);
+        b.setAttribute('aria-checked', on ? 'true' : 'false');
+      }
+    }
+  }
+
+  function changeSetting(key, value) {
+    const next = sanitizeSettings({ ...settings, [key]: value });
+    if (next[key] === settings[key]) { syncSettings(); return; }
+    settings = saveSettings(next);
+    applyOwnSettings();
+    syncSettings();
+    emit('settings', { ...settings, changed: key });
+  }
+
+  function openSettings() {
+    if (settingsOpen) return;
+    settingsOpen = true;
+    settingsFrom = document.activeElement;
+    resetArmedAt = 0;
+    refs.resetBtn.textContent = '지우기';
+    syncSettings();
+    root.setAttribute('data-settings', '');
+    try {
+      refs.settingsDone.focus({ preventScroll: true });
+    } catch (e) {
+      /* focus is a convenience only */
+    }
+  }
+
+  function closeSettings() {
+    if (!settingsOpen) return;
+    settingsOpen = false;
+    root.removeAttribute('data-settings');
+    const back = settingsFrom;
+    settingsFrom = null;
+    if (back && root.contains(back) && typeof back.focus === 'function') {
+      try {
+        back.focus({ preventScroll: true });
+      } catch (e) {
+        /* focus is a convenience only */
+      }
+    }
+  }
+
+  function resetSettings() {
+    settings = saveSettings({ ...SETTINGS_DEFAULTS });
+    applyOwnSettings();
+    syncSettings();
+    emit('settings', { ...settings, changed: 'all' });
+  }
+
+  // "지우기" asks once more before the records go
+  function resetRecords() {
+    const now = performance.now();
+    if (!(now - resetArmedAt < 4000)) {
+      resetArmedAt = now;
+      refs.resetBtn.textContent = '한 번 더 누르면 지워져요';
+      return;
+    }
+    resetArmedAt = 0;
+    removeStored(BEST_KEY);
+    for (const id of SONG_IDS) removeStored(songBestKey(id));
+    for (const d of DIFFICULTIES) {
+      removeStored(SLASH_BEST_KEY + d);
+      removeStored(SLASH_KEYS_BEST_KEY + d);
+      slashBest[d] = 0;
+      slashKeysBest[d] = 0;
+    }
+    best = 0;
+    updateBestLabel();
+    refs.resetBtn.textContent = '지웠어요';
+    emit('recordsReset');
+  }
+
+  function onSettingInput(e) {
+    const el = e.target;
+    const k = el && typeof el.getAttribute === 'function' ? el.getAttribute('data-set') : null;
+    if (!k || el.tagName !== 'INPUT') return;
+    changeSetting(k, k === 'offsetMs' ? Number(el.value) : Number(el.value) / 100);
+  }
+  root.addEventListener('input', onSettingInput);
+  applyOwnSettings();
+  syncSettings();
+
   /**
    * setInput('camera' | 'keys' | 'demo'): who plays the run that is about to be shown. On the
    * keyboard the camera panel carries the key legend and the hint lines name the keys; the
@@ -4565,6 +4716,7 @@ export function createHud(root, options) {
 
     screen = name;
     root.setAttribute('data-screen', name);
+    if (settingsOpen && name !== 'title' && name !== 'pause') closeSettings();
 
     if (name === 'camera') {
       if (!(data && data.keepError)) setCameraError(null);
@@ -4636,6 +4788,15 @@ export function createHud(root, options) {
       case 'startKeys': startKeysNow(); break;
       case 'openExternal': openExternal(); break;
       case 'copyLink': copyLink(); break;
+      case 'openSettings': openSettings(); break;
+      case 'closeSettings': closeSettings(); break;
+      case 'resetSettings': resetSettings(); break;
+      case 'resetRecords': resetRecords(); break;
+      case 'setOpt': {
+        const g = el ? el.closest('.seg') : null;
+        if (g) changeSetting(g.getAttribute('data-set'), el.getAttribute('data-value'));
+        break;
+      }
       case 'retry': fire('retry'); break;
       case 'menu': fire('menu'); break;
       case 'pause': pauseNow(); break;
@@ -4654,6 +4815,10 @@ export function createHud(root, options) {
 
   function onClick(e) {
     const t = e.target;
+    if (settingsOpen) {
+      if (t === refs.settings) { closeSettings(); return; }
+      if (!refs.settings.contains(t)) return;
+    }
     const b = t && typeof t.closest === 'function' ? t.closest('[data-act]') : null;
     if (!b || !root.contains(b)) return;
     const host = b.closest('.screen');
@@ -4668,6 +4833,13 @@ export function createHud(root, options) {
   function onKey(e) {
     if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
     const k = e.key;
+    if (settingsOpen) {
+      if (k === 'Escape' || k === 'Esc') {
+        closeSettings();
+        e.preventDefault();
+      }
+      return; // the window's own controls take the rest (sliders, buttons)
+    }
     if (k === 'Escape' || k === 'Esc') {
       if (screen === 'play') pauseNow();
       else if (screen === 'pause') resumeNow();
@@ -4765,6 +4937,7 @@ export function createHud(root, options) {
     clearTimers();
     if (tickId) cancelAnimationFrame(tickId);
     root.removeEventListener('click', onClick);
+    root.removeEventListener('input', onSettingInput);
     window.removeEventListener('keydown', onKey);
     window.removeEventListener('touchstart', onFirstTouch);
     window.removeEventListener('resize', queueLayout);
@@ -4820,6 +4993,14 @@ export function createHud(root, options) {
     keyTap, // (KeyboardEvent.code)  a key of the legend lights up
     setPads, // (eightWay)  the touch pads of a keyboard run: four directions, or eight; on('padDown', { hand, dir })
     setCameraInfo, // (text)  small status line of the camera screen
+    openSettings, // the settings window (title, pause); on('settings', { ...settings, changed }) when one changes
+    closeSettings,
+    get settings() {
+      return settings;
+    },
+    get settingsOpen() {
+      return settingsOpen;
+    },
     device, // { ios, android, mobile, inApp, kakao, touch }
     get touch() {
       return touch;

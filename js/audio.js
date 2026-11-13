@@ -1780,6 +1780,9 @@ export function createMusic() {
   let sfxNoiseBuf = null;
 
   let volume = 1;
+  let musicVol = null;   // the player's music volume (after the analyser tap: the stage keeps dancing at volume 0)
+  let musicVolume = 1;   // gains, already curved (see setMusicVolume)
+  let sfxVolume = 1;
   let state = 'idle'; // 'idle' | 'playing' | 'paused' | 'ended'
   let source = null; // { node, fade }
   let startAt = 0; // ctx time at which `offset` seconds of the song are (were) rendered
@@ -1847,9 +1850,12 @@ export function createMusic() {
 
     musicGain = ctx.createGain();
     musicGain.gain.value = MIX.musicGain;
-    musicGain.connect(masterGain);
+    musicVol = ctx.createGain();
+    musicVol.gain.value = musicVolume;
+    musicGain.connect(musicVol);
+    musicVol.connect(masterGain);
     sfxGain = ctx.createGain();
-    sfxGain.gain.value = MIX.sfxGain;
+    sfxGain.gain.value = MIX.sfxGain * sfxVolume;
     sfxGain.connect(masterGain);
     sfxBus = createSfxBus(ctx, sfxGain);
 
@@ -1858,7 +1864,7 @@ export function createMusic() {
     analyser.smoothingTimeConstant = LEVELS.smoothing;
     analyser.minDecibels = LEVELS.minDb;
     analyser.maxDecibels = LEVELS.maxDb;
-    musicGain.connect(analyser); // tapped before the master volume: visuals ignore setVolume()
+    musicGain.connect(analyser); // tapped before every volume control: visuals ignore setVolume() / setMusicVolume()
     freq = new Uint8Array(analyser.frequencyBinCount);
     const hz = ctx.sampleRate / analyser.fftSize;
     const range = (b) => {
@@ -2115,6 +2121,21 @@ export function createMusic() {
     setVolume(v) {
       volume = clamp(Number(v) || 0, 0, 1);
       if (masterGain) masterGain.gain.setTargetAtTime(volume, ctx.currentTime, 0.02);
+    },
+
+    /**
+     * The player's volume sliders, 0..1 each (squared into a gain: half way sounds half as loud).
+     * May be called before init(); the levels the stage reacts to are not affected.
+     */
+    setMusicVolume(v) {
+      const x = clamp(Number.isFinite(Number(v)) ? Number(v) : 1, 0, 1);
+      musicVolume = x * x;
+      if (musicVol) musicVol.gain.setTargetAtTime(musicVolume, ctx.currentTime, 0.02);
+    },
+    setSfxVolume(v) {
+      const x = clamp(Number.isFinite(Number(v)) ? Number(v) : 1, 0, 1);
+      sfxVolume = x * x;
+      if (sfxGain) sfxGain.gain.setTargetAtTime(MIX.sfxGain * sfxVolume, ctx.currentTime, 0.02);
     },
 
     /** Register a callback fired once each time the track reaches its natural end. Returns an unsubscribe fn. */
